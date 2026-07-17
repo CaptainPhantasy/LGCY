@@ -5,6 +5,7 @@
  */
 
 import type {
+  ProviderDialect,
   UnifiedStreamEvent,
   UnifiedStreamEventType,
   UpstreamError,
@@ -75,6 +76,18 @@ abstract class BaseNormalizer {
       providerId: this.providerId,
       requestId: this.requestId,
     };
+    return [this.emit("error", err)];
+  }
+
+  /**
+   * Force-terminate with an explicit transport/provider error. If a terminal
+   * event (response-complete or error) was already emitted this is a no-op —
+   * the exactly-one-terminal guarantee holds regardless of call count. Used by
+   * the relay to surface fetch/timeout/cancellation failures through the same
+   * sequence-numbered channel as normal events.
+   */
+  terminateWithError(err: UpstreamError): UnifiedStreamEvent[] {
+    if (this.#terminated) return [];
     return [this.emit("error", err)];
   }
 }
@@ -282,4 +295,18 @@ export class AnthropicStreamNormalizer extends BaseNormalizer {
     }
     return out;
   }
+}
+
+/* ------------------------------- Public surface ---------------------------- */
+
+export type Normalizer = OpenAiStreamNormalizer | AnthropicStreamNormalizer;
+
+/** Select the dialect-appropriate normalizer for a provider configuration. */
+export function createNormalizer(
+  dialect: ProviderDialect,
+  opts: NormalizerOptions,
+): Normalizer {
+  return dialect === "anthropic"
+    ? new AnthropicStreamNormalizer(opts)
+    : new OpenAiStreamNormalizer(opts);
 }
