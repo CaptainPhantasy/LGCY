@@ -1,0 +1,19 @@
+{
+  "name": "lgcy",
+  "description": "LGCY — operator-grade terminal interface for agentic development on the omp platform",
+  "module": "src/app/main.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/app/main.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bun build --compile --outfile dist/lgcy src/app/main.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
