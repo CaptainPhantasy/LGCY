@@ -5,7 +5,7 @@
  *
  * Crash-safety: appends are atomic per-line (one write + newline). A torn final
  * line is skipped on load rather than corrupting the session. No secrets are
- * ever written — callers must scrub credential values before appending.
+ * ever written — append payloads are scrubbed at the persistence boundary.
  */
 
 import { appendFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
@@ -37,19 +37,23 @@ export interface LoadedSession {
 
 /** A migration transforms a raw parsed line from an old schema version upward. */
 export type Migration = (line: Record<string, unknown>) => Record<string, unknown>;
+export type SecretScrubber = (data: unknown) => unknown;
 
 interface StoreOptions {
   baseDir?: string;
   migrations?: Map<number, Migration>;
+  scrubber?: SecretScrubber;
 }
 
 export class SessionStore {
   readonly #baseDir: string;
   readonly #migrations: Map<number, Migration>;
+  readonly #scrubber: SecretScrubber;
 
   constructor(opts: StoreOptions = {}) {
     this.#baseDir = opts.baseDir ?? join(homedir(), ".lgcy", "sessions");
     this.#migrations = opts.migrations ?? new Map();
+    this.#scrubber = opts.scrubber ?? scrubSecrets;
   }
 
   pathFor(sessionId: string): string {
@@ -83,7 +87,7 @@ export class SessionStore {
       seq,
       timestamp: Date.now(),
       type,
-      data,
+      data: this.#scrubber(data),
     };
     await appendFile(this.pathFor(sessionId), `${JSON.stringify(line)}\n`, "utf-8");
     return seq;

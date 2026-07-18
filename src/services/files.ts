@@ -5,8 +5,8 @@
  * to prevent escaping the project boundary.
  */
 
-import { readFile, writeFile, readdir, mkdir, stat, access } from "node:fs/promises";
-import { join, resolve, relative, isAbsolute, dirname } from "node:path";
+import { readFile, writeFile, readdir, mkdir, stat, access, realpath } from "node:fs/promises";
+import { join, resolve, relative, isAbsolute, dirname, parse, sep } from "node:path";
 
 export class FileNotFoundError extends Error {
   constructor(path: string) {
@@ -46,9 +46,8 @@ export class FileService {
 
   /** Resolve a (possibly relative) path safely under the workspace root. */
   resolve(path: string): string {
-    const abs = isAbsolute(path) ? path : join(this.#root, path);
-    const rel = relative(this.#root, abs);
-    if (rel.startsWith("..")) throw new Error(`path escapes workspace root: ${path}`);
+    const abs = resolve(isAbsolute(path) ? path : join(this.#root, path));
+    this.#assertInside(this.#root, abs, path);
     return abs;
   }
 
@@ -59,6 +58,7 @@ export class FileService {
     } catch {
       throw new FileNotFoundError(abs);
     }
+    await this.#assertRealTargetInsideRoot(abs, path);
     const st = await stat(abs);
     if (st.size > this.#maxRead) {
       throw new Error(`file too large (${st.size} > ${this.#maxRead} bytes): ${abs}`);
@@ -68,12 +68,14 @@ export class FileService {
 
   async writeText(path: string, content: string): Promise<void> {
     const abs = this.resolve(path);
+    await this.#assertWritableParentInsideRoot(abs, path);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, content, "utf-8");
   }
 
   async listDir(path = "."): Promise<DirEntry[]> {
     const abs = this.resolve(path);
+    await this.#assertRealTargetInsideRoot(abs, path);
     const names = await readdir(abs, { withFileTypes: true });
     const out: DirEntry[] = [];
     for (const de of names) {
@@ -94,10 +96,50 @@ export class FileService {
 
   async exists(path: string): Promise<boolean> {
     try {
-      await access(this.resolve(path));
+      const abs = this.resolve(path);
+      await access(abs);
+      await this.#assertRealTargetInsideRoot(abs, path);
       return true;
     } catch {
       return false;
+    }
+  }
+
+  #assertInside(root: string, target: string, original: string): void {
+    const rel = relative(root, target);
+    if (rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel))) return;
+    throw new Error(`path escapes workspace root: ${original}`);
+  }
+
+  async #assertRealTargetInsideRoot(abs: string, original: string): Promise<void> {
+    const [realRoot, realTarget] = await Promise.all([realpath(this.#root), realpath(abs)]);
+    this.#assertInside(realRoot, realTarget, original);
+  }
+
+  async #assertWritableParentInsideRoot(abs: string, original: string): Promise<void> {
+    const realRoot = await realpath(this.#root);
+    try {
+      const realTarget = await realpath(abs);
+      this.#assertInside(realRoot, realTarget, original);
+      return;
+    } catch {
+      // Target does not exist yet; validate the nearest existing parent so a
+      // symlinked parent cannot redirect new writes outside the workspace.
+    }
+    const realParent = await this.#realExistingAncestor(dirname(abs));
+    this.#assertInside(realRoot, realParent, original);
+  }
+
+  async #realExistingAncestor(path: string): Promise<string> {
+    let current = path;
+    while (true) {
+      try {
+        return await realpath(current);
+      } catch (e) {
+        const parent = dirname(current);
+        if (parent === current || current === parse(current).root) throw e;
+        current = parent;
+      }
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "lgcy",
-  "description": "LGCY — operator-grade terminal interface for agentic development on the omp platform",
+  "description": "LGCY — standalone TUI client for OpenAI-compatible, Anthropic-compatible, and OpenCode-routed model providers",
   "module": "src/app/main.ts",
   "type": "module",
   "private": true,

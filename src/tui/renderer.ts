@@ -13,12 +13,6 @@ import { type Cell, ScreenBuffer, cellEqual } from "./buffer";
 export class Renderer {
   #previous: ScreenBuffer | undefined;
 
-  constructor(width: number, height: number) {
-    this.#previous = undefined;
-    void width;
-    void height;
-  }
-
   /** Reset to a blank slate so the next render is a full paint. */
   reset(): void {
     this.#previous = undefined;
@@ -58,7 +52,6 @@ export class Renderer {
     const height = Math.min(prev.height, current.height);
     const width = Math.min(prev.width, current.width);
     let out = "";
-    let activeStyle: Style | undefined;
 
     for (let y = 0; y < height; y++) {
       const prevRow = prev.rows[y]!;
@@ -88,8 +81,6 @@ export class Renderer {
         if (run.length > 0) {
           out += cursorTo(y + 1, runStart + 1) + sgr(runStyle) + run;
         }
-        activeStyle = undefined;
-        void activeStyle;
       }
     }
     return out;

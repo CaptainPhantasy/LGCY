@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { rm, mkdtemp } from "node:fs/promises";
+import { rm, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileService, FileNotFoundError } from "../../src/services/files";
@@ -35,6 +35,12 @@ describe("FileService", () => {
     expect(() => fs.resolve("../../../etc/passwd")).toThrow(/workspace root/);
   });
 
+  test("literal child names beginning with dots are allowed", async () => {
+    const fs = new FileService({ root: dir });
+    await fs.writeText("..foo/file.txt", "ok");
+    expect(await fs.readText("..foo/file.txt")).toBe("ok");
+  });
+
   test("absolute path inside root allowed", async () => {
     const fs = new FileService({ root: dir });
     await fs.writeText("ok.txt", "y");
@@ -65,5 +71,39 @@ describe("FileService", () => {
     const fs = new FileService({ root: dir, maxReadBytes: 3 });
     await fs.writeText("big.txt", "xxxxx");
     await expect(fs.readText("big.txt")).rejects.toThrow(/too large/);
+  });
+
+  test("readText rejects symlinks that escape the workspace", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "lgcy-files-outside-"));
+    try {
+      await writeFile(join(outside, "secret.txt"), "secret", "utf-8");
+      await symlink(join(outside, "secret.txt"), join(dir, "linked-secret.txt"));
+      const fs = new FileService({ root: dir });
+      await expect(fs.readText("linked-secret.txt")).rejects.toThrow(/workspace root/);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("writeText rejects symlinked parent directories that escape the workspace", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "lgcy-files-outside-"));
+    try {
+      await symlink(outside, join(dir, "linked-dir"));
+      const fs = new FileService({ root: dir });
+      await expect(fs.writeText("linked-dir/new.txt", "secret")).rejects.toThrow(/workspace root/);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("listDir rejects symlinked directories that escape the workspace", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "lgcy-files-outside-"));
+    try {
+      await symlink(outside, join(dir, "linked-dir"));
+      const fs = new FileService({ root: dir });
+      await expect(fs.listDir("linked-dir")).rejects.toThrow(/workspace root/);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });

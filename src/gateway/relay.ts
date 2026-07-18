@@ -11,6 +11,7 @@
 import type {
   CredentialReference,
   ProviderConfiguration,
+  SecretResolver,
   UnifiedChatRequest,
   UnifiedStreamEvent,
   UpstreamError,
@@ -20,7 +21,7 @@ import { SseParser } from "./sse";
 import { ProviderRegistry, authHeaders, completionUrl } from "./providers";
 import { toAnthropicBody, toOpenAiBody } from "./translate";
 
-export type SecretResolver = (ref: CredentialReference) => Promise<string>;
+export type { SecretResolver };
 export type FetchImpl = typeof globalThis.fetch;
 
 export interface RelayCallOptions {

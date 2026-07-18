@@ -4,8 +4,7 @@
  * kinds: environment variables, the auth-broker, or explicit none.
  */
 
-import type { CredentialReference } from "../core/contracts";
-import type { SecretResolver } from "../gateway/relay";
+import type { CredentialReference, SecretResolver } from "../core/contracts";
 import { BrokerClient, BrokerError, extractSecret } from "./client";
 
 export interface SecretResolverOptions {

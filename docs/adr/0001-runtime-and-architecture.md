@@ -4,7 +4,9 @@ Status: Accepted (cycle 2, 2026-07-17)
 
 ## Context
 
-Greenfield TUI ("LGCY") for the omp platform ecosystem. Evidence gathered in
+Greenfield standalone TUI ("LGCY") for OpenAI-compatible, Anthropic-compatible,
+and OpenCode-routed model providers with optional OMP auth-broker integration.
+Evidence gathered in
 cycle 1 (see docs/loop/PROGRESS.md):
 
 - The surrounding platform (`agent-runtime-a` / `omp`) is Bun + TypeScript
@@ -37,8 +39,8 @@ cycle 1 (see docs/loop/PROGRESS.md):
      surfaces. Imports `core` + `services` events only; never provider wire
      types.
    - `src/app/` — entry point and composition root.
-   Dependency direction is enforced by review + a lint test that greps
-   imports (cheap, no extra tooling).
+   Dependency direction is enforced by review + an architecture-boundary test
+   that greps imports (cheap, no extra tooling).
 3. **TUI rendering: custom differential ANSI renderer** (no Ink/React, no
    external TUI framework). Rationale: the surfaces required are dense,
    stream-heavy, and need exact control over repaint regions ("no

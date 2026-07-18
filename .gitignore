@@ -1,2 +1,7 @@
 node_modules/
 dist/
+
+# Local tool/session state
+
+# Floyd local memory
+.floyd/

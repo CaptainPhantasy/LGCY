@@ -2,7 +2,8 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { banner, createApp, type AppContext } from "../../src/app/main";
+import { banner, createApp, sendAndStream, type AppContext } from "../../src/app/main";
+import type { UnifiedStreamEvent } from "../../src/core/contracts";
 
 let dir: string;
 beforeEach(async () => {
@@ -106,5 +107,28 @@ describe("banner", () => {
   test("offline broker reflected", () => {
     const a = app();
     expect(banner(a, false)).toContain("broker: offline");
+  });
+});
+
+describe("sendAndStream", () => {
+  test("renders each text delta and leaves the final response in the log", async () => {
+    const a = app();
+    const events: UnifiedStreamEvent[] = [
+      { type: "text-delta", requestId: "r1", sequence: 0, providerId: "openai", model: "gpt-4o", elapsedMs: 1, data: { text: "hel" } },
+      { type: "text-delta", requestId: "r1", sequence: 1, providerId: "openai", model: "gpt-4o", elapsedMs: 2, data: { text: "lo" } },
+    ];
+    a.relay.stream = async function* () {
+      yield* events;
+    } as typeof a.relay.stream;
+    const log: string[] = [];
+    const renders: string[][] = [];
+
+    await sendAndStream(a, "openai", "gpt-4o", "hi", log, () => renders.push([...log]));
+
+    expect(renders.length).toBe(3);
+    expect(renders[0]).toEqual(["hel"]);
+    expect(renders[1]).toEqual(["hello"]);
+    expect(renders[2]).toEqual(["hello"]);
+    expect(log).toEqual(["hello"]);
   });
 });

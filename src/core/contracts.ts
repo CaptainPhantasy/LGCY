@@ -22,6 +22,8 @@ export type CredentialReference =
   | { kind: "auth-broker"; provider: string }
   | { kind: "none" };
 
+export type SecretResolver = (ref: CredentialReference) => Promise<string>;
+
 export interface ProviderConfiguration {
   id: string;
   displayName: string;

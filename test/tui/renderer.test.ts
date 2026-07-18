@@ -14,7 +14,7 @@ describe("paintToString", () => {
 
 describe("Renderer", () => {
   test("first render is a full paint with clear screen", () => {
-    const r = new Renderer(3, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(3, 1);
     b.writeText(0, 0, "hi");
     const out = r.render(b);
@@ -23,7 +23,7 @@ describe("Renderer", () => {
   });
 
   test("re-render with no changes emits nothing", () => {
-    const r = new Renderer(3, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(3, 1);
     b.writeText(0, 0, "hi");
     r.render(b);
@@ -31,7 +31,7 @@ describe("Renderer", () => {
   });
 
   test("re-render with one changed cell emits only that cell", () => {
-    const r = new Renderer(3, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(3, 1);
     b.writeText(0, 0, "abc");
     r.render(b);
@@ -42,7 +42,7 @@ describe("Renderer", () => {
   });
 
   test("re-render with a changed row emits the run", () => {
-    const r = new Renderer(5, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(5, 1);
     b.writeText(0, 0, "hello");
     r.render(b);
@@ -53,7 +53,7 @@ describe("Renderer", () => {
   });
 
   test("change on second row positions cursor to row 2", () => {
-    const r = new Renderer(2, 2);
+    const r = new Renderer();
     const b = new ScreenBuffer(2, 2);
     b.writeText(0, 0, "ab");
     b.writeText(0, 1, "cd");
@@ -66,7 +66,7 @@ describe("Renderer", () => {
   });
 
   test("reset forces full paint on next render", () => {
-    const r = new Renderer(2, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(2, 1);
     b.writeText(0, 0, "hi");
     r.render(b);
@@ -75,7 +75,7 @@ describe("Renderer", () => {
   });
 
   test("style change alone triggers a repaint of that cell", () => {
-    const r = new Renderer(2, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(2, 1);
     b.writeText(0, 0, "hi");
     r.render(b);
@@ -86,7 +86,7 @@ describe("Renderer", () => {
   });
 
   test("style run emits sgr then resets", () => {
-    const r = new Renderer(3, 1);
+    const r = new Renderer();
     const b = new ScreenBuffer(3, 1);
     b.writeText(0, 0, "abc", { bold: true });
     r.render(b);

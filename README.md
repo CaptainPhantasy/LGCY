@@ -1,10 +1,11 @@
 # lgcy
 
-Operator-grade terminal interface for agentic development on the omp platform.
+LGCY is a standalone terminal UI client for OpenAI-compatible,
+Anthropic-compatible, and OpenCode-routed model providers, with optional OMP
+auth-broker integration.
 
-LGCY is a zero-runtime-dependency TUI that bridges the omp auth-broker
-credential vault to OpenAI- and Anthropic-dialect providers, with a custom
-differential ANSI renderer, append-only JSONL session persistence, and a
+LGCY is a zero-runtime-dependency TUI with a custom differential ANSI renderer,
+append-only JSONL session persistence, optional brokered credentials, and a
 provider-neutral streaming pipeline.
 
 ## Architecture
@@ -53,7 +54,7 @@ enforces this before any session write.
 
 ```bash
 bun install
-bun test          # 196+ tests
+bun test          # 212+ tests
 bunx tsc --noEmit # strict typecheck
 bun run src/app/main.ts
 ```
@@ -81,6 +82,18 @@ bun run build     # → dist/lgcy (compiled)
 - `Ctrl+C` or `/exit` — quit
 - `Esc` — clear input line
 - `Backspace` — delete
+
+## Release smoke checklist
+
+Run this manual TTY smoke check before public release when automated PTY testing
+is not available or stable in CI:
+
+1. `bun run src/app/main.ts` starts in a real terminal.
+2. The banner renders and lists configured providers.
+3. `/help` prints the command list.
+4. `/exit` exits cleanly.
+5. Cursor visibility, raw mode, and alt-screen state are restored after exit or
+   interruption.
 
 ## Design decisions
 

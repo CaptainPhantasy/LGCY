@@ -39,6 +39,30 @@ describe("SessionStore", () => {
     expect(loaded.entries[1]!.data).toEqual({ role: "assistant", content: "yo" });
   });
 
+  test("append scrubs secrets at the persistence boundary", async () => {
+    const store = new SessionStore({ baseDir: dir });
+    await store.create("s1", { title: "T", createdAt: 0 });
+    await store.append("s1", "message", {
+      authorization: "Bearer live-token",
+      content: "token is sk-abcd1234567890",
+      nested: { api_key: "secret-value", keep: "ok" },
+    });
+    const loaded = await store.load("s1");
+    expect(loaded.entries[0]!.data).toEqual({
+      authorization: "[redacted]",
+      content: "token is sk-[redacted]",
+      nested: { api_key: "[redacted]", keep: "ok" },
+    });
+  });
+
+  test("append supports an explicit scrubber override", async () => {
+    const store = new SessionStore({ baseDir: dir, scrubber: () => ({ scrubbed: true }) });
+    await store.create("s1", { title: "T", createdAt: 0 });
+    await store.append("s1", "message", { key: "secret" });
+    const loaded = await store.load("s1");
+    expect(loaded.entries[0]!.data).toEqual({ scrubbed: true });
+  });
+
   test("load skips torn/malformed lines (crash-safe)", async () => {
     const store = new SessionStore({ baseDir: dir });
     await store.create("s1", { title: "T", createdAt: 0 });

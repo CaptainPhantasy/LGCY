@@ -7,7 +7,7 @@
  */
 
 import { BUILT_IN_PROVIDERS, ProviderRegistry } from "../gateway/providers";
-import { GatewayRelay, type SecretResolver } from "../gateway/relay";
+import { GatewayRelay } from "../gateway/relay";
 import { BrokerClient } from "../broker/client";
 import { createSecretResolver } from "../broker/resolve";
 import { FileService } from "../services/files";
@@ -21,7 +21,7 @@ import { KeyDecoder } from "../tui/keybind";
 import { Renderer } from "../tui/renderer";
 import { ScreenBuffer } from "../tui/buffer";
 import { HIDE_CURSOR, SHOW_CURSOR, CLEAR_SCREEN, Color } from "../tui/ansi";
-import type { UnifiedChatRequest, UnifiedMessage } from "../core/contracts";
+import type { SecretResolver, UnifiedChatRequest, UnifiedMessage } from "../core/contracts";
 
 const VERSION = "0.1.0";
 const ALT_ENTER = "\x1b[?1049h";
@@ -194,7 +194,7 @@ async function runInteractive(
   const rows = stdout.rows || 24;
 
   const decoder = new KeyDecoder();
-  const renderer = new Renderer(cols, rows);
+  const renderer = new Renderer();
   const log: string[] = [banner(ctx, brokerHealthy, projectInfo)];
   let input = "";
   let settings: AppSettings = await ctx.settings.load();
@@ -277,7 +277,7 @@ async function runInteractive(
   stdin.setRawMode(false);
 }
 
-async function sendAndStream(
+export async function sendAndStream(
   ctx: AppContext,
   providerId: string,
   model: string | undefined,
@@ -287,28 +287,33 @@ async function sendAndStream(
 ): Promise<void> {
   if (!model) {
     log.push("(no default model set — use /model <name>)");
+    render();
     return;
   }
   const messages: UnifiedMessage[] = [{ role: "user", content: text }];
   const request: UnifiedChatRequest = { providerId, model, messages, stream: true };
+  const responseIndex = log.length;
   let acc = "";
   try {
     for await (const ev of ctx.relay.stream(request, { secretResolver: ctx.secretResolver })) {
       if (ev.type === "text-delta") {
         acc += (ev.data as { text: string }).text ?? "";
-        render;
+        if (acc.length > 0) log[responseIndex] = acc;
+        render();
       } else if (ev.type === "error") {
         const err = ev.data as { message: string };
         log.push(`error: ${err.message}`);
+        render();
         return;
       }
     }
   } catch (e) {
     log.push(`error: ${e instanceof Error ? e.message : String(e)}`);
+    render();
     return;
   }
-  if (acc.length > 0) log.push(acc);
-  void render;
+  if (acc.length > 0) log[responseIndex] = acc;
+  render();
 }
 
 function truncate(s: string, max: number): string {

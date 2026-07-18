@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { UnifiedChatRequest, UnifiedStreamEvent } from "../../src/core/contracts";
-import { GatewayRelay, type FetchImpl, type SecretResolver } from "../../src/gateway/relay";
+import type { SecretResolver, UnifiedChatRequest, UnifiedStreamEvent } from "../../src/core/contracts";
+import { GatewayRelay, type FetchImpl } from "../../src/gateway/relay";
 import { ProviderRegistry } from "../../src/gateway/providers";
 import type { ProviderConfiguration } from "../../src/core/contracts";
 
