@@ -13,6 +13,15 @@ describe("tokenize", () => {
   });
 });
 
+describe("tokenize — item #34/#35 unterminated quote", () => {
+  test("unterminated quote keeps opening quote as literal", () => {
+    expect(tokenize('say "unterminated')).toEqual(["say", '"unterminated']);
+  });
+  test("unterminated quote in middle of token", () => {
+    expect(tokenize('a"b')).toEqual(['a"b']);
+  });
+});
+
 describe("CommandRegistry.parse", () => {
   test("with leading slash", () => {
     expect(CommandRegistry.parse("/help")).toEqual({ id: "help", argv: ["help"] });

@@ -102,4 +102,15 @@ export class RequestLifecycle {
     this.transition("aborting");
     return true;
   }
+
+  /**
+   * Dispose from a terminal state. Throws LifecycleError if the request has
+   * NOT reached a terminal outcome yet — this makes a forgotten disposal
+   * (hanging in "aborted"/mid-flight states) a loud programming error
+   * instead of a silent leak.
+   */
+  dispose(): void {
+    if (!this.isTerminal) throw new LifecycleError(this.#state, "disposed");
+    this.transition("disposed");
+  }
 }

@@ -1,0 +1,6 @@
+# LGCY Bun configuration.
+# Tests are pinned to this package root; run `bun test` from the repository
+# root (CI must invoke it there). Tests resolve the repo root via
+# import.meta.dir, never process.cwd(), so behavior does not depend on the
+# caller's working directory.
+[test]

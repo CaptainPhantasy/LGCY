@@ -7,7 +7,7 @@
  * render-to-string without a live terminal.
  */
 
-import { CLEAR_SCREEN, cursorTo, sgr, styleEqual, type Style } from "./ansi";
+import { CLEAR_SCREEN, RESET, cursorTo, sgr, styleEqual, type Style } from "./ansi";
 import { type Cell, ScreenBuffer, cellEqual } from "./buffer";
 
 export class Renderer {
@@ -21,17 +21,23 @@ export class Renderer {
   render(current: ScreenBuffer): string {
     const prev = this.#previous;
     this.#previous = current.clone();
-    if (!prev) return this.#fullPaint(current);
+    // A dimension change (including terminal resize and buffer shrink) forces
+    // a full paint: CLEAR_SCREEN drops stale cells that a min-clamped diff
+    // would leave behind on the terminal.
+    if (!prev || prev.width !== current.width || prev.height !== current.height) {
+      return this.#fullPaint(current);
+    }
     return this.#diffPaint(prev, current);
   }
 
   #fullPaint(buf: ScreenBuffer): string {
     let out = CLEAR_SCREEN;
+    // Style state carries across rows: cursor positioning does not reset SGR,
+    // so re-emitting the same style at each row start would be wasted bytes.
     let activeStyle: Style | undefined;
     for (let y = 0; y < buf.height; y++) {
       const row = buf.rows[y]!;
       out += cursorTo(y + 1, 1);
-      activeStyle = undefined;
       for (let x = 0; x < buf.width; x++) {
         const c = row[x]!;
         if (!styleEqual(activeStyle, c.style)) {
@@ -47,6 +53,10 @@ export class Renderer {
   /**
    * Diff each cell. To minimize cursor moves, contiguous changed cells in a
    * row are painted as a single run with a single cursor positioning.
+   * Precondition: prev and current have identical dimensions (render()
+   * full-paints on any dimension change), so the min-clamps below are only
+   * defensive. Output always ends with a RESET so the terminal's SGR state
+   * is predictable after every frame.
    */
   #diffPaint(prev: ScreenBuffer, current: ScreenBuffer): string {
     const height = Math.min(prev.height, current.height);
@@ -83,6 +93,9 @@ export class Renderer {
         }
       }
     }
+    // Every styled run is self-contained (sgr() resets first), and the frame
+    // ends in a known state.
+    if (out.length > 0) out += RESET;
     return out;
   }
 }

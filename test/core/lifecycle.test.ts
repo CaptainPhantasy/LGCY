@@ -75,3 +75,23 @@ describe("RequestLifecycle", () => {
     expect([...times].sort((a, b) => a - b)).toEqual(times);
   });
 });
+
+describe("RequestLifecycle — item #47 dispose()", () => {
+  test("dispose from completed succeeds", () => {
+    const lc = new RequestLifecycle();
+    lc.transition("failed");
+    lc.dispose();
+    expect(lc.isDisposed).toBe(true);
+  });
+  test("dispose from non-terminal state throws", () => {
+    const lc = new RequestLifecycle();
+    expect(() => lc.dispose()).toThrow(/Invalid lifecycle transition/);
+  });
+  test("requestAbort + abort + dispose chain", () => {
+    const lc = new RequestLifecycle();
+    lc.requestAbort();
+    lc.transition("aborted");
+    lc.dispose();
+    expect(lc.isDisposed).toBe(true);
+  });
+});

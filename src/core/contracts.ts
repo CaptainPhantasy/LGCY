@@ -73,6 +73,7 @@ export type UnifiedStreamEventType =
   | "tool-call-complete"
   | "usage"
   | "response-complete"
+  | "warning"
   | "error";
 
 export interface UnifiedStreamEvent {

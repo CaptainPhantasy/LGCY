@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { rm, mkdtemp } from "node:fs/promises";
+import { rm, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AppSettings, DEFAULT_SETTINGS, SettingsStore } from "../../src/services/settings";
@@ -56,5 +56,37 @@ describe("SettingsStore", () => {
     await store.update({ preferences: { fontSize: 14 } });
     const s = await store.load();
     expect(s.preferences).toEqual({ font: "mono", fontSize: 14 });
+  });
+});
+
+describe("SettingsStore — items #16/#17/#45", () => {
+  test("load strips unknown keys and invalid theme (#17)", async () => {
+    const store = new SettingsStore({ path });
+    await writeFile(path, JSON.stringify({ theme: "neon", bogus: 1, defaultProviderId: 42 }), "utf-8");
+    const s = await store.load();
+    expect(s.theme).toBe("auto"); // invalid → default
+    expect((s as Record<string, unknown>).bogus).toBeUndefined();
+    expect(s.defaultProviderId).toBeUndefined(); // non-string dropped
+  });
+  test("update deletes models keys via undefined (#16)", async () => {
+    const store = new SettingsStore({ path });
+    await store.update({ models: { openai: ["gpt-4"], anthropic: ["claude"] } });
+    await store.update({ models: { openai: undefined } });
+    const s = await store.load();
+    expect(s.models).toEqual({ anthropic: ["claude"] });
+  });
+  test("update deletes top-level keys via undefined (#16)", async () => {
+    const store = new SettingsStore({ path });
+    await store.update({ defaultModel: "gpt-4" });
+    await store.update({ defaultModel: undefined });
+    const s = await store.load();
+    expect(s.defaultModel).toBeUndefined();
+  });
+  test("onWarn triggered on credential-shaped preferences (#45)", async () => {
+    const warnings: string[] = [];
+    const store = new SettingsStore({ path, onWarn: (m) => warnings.push(m) });
+    await store.update({ preferences: { apiToken: "sk-" + "abcdefghijklmnop" } });
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings[0]).toContain("preferences.");
   });
 });

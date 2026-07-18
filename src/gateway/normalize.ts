@@ -47,7 +47,9 @@ abstract class BaseNormalizer {
       requestId: this.requestId,
       sequence: this.#sequence++,
       providerId: this.providerId,
-      elapsedMs: this.#now() - this.#startMs,
+      // Clamp at zero: an injected non-monotonic clock must never produce a
+      // negative elapsed time.
+      elapsedMs: Math.max(0, this.#now() - this.#startMs),
       data,
     };
     if (this.model !== undefined) ev.model = this.model;
@@ -67,7 +69,11 @@ abstract class BaseNormalizer {
 
   abstract handle(event: SseEvent): UnifiedStreamEvent[];
 
-  /** Stream ended. Guarantees exactly one terminal event per request. */
+  /**
+   * Stream ended. Guarantees exactly one terminal event per request.
+   * Idempotent: safe to call after a successful completion (returns []),
+   * and produces at most one terminal event across all calls.
+   */
   close(): UnifiedStreamEvent[] {
     if (this.#terminated) return [];
     const err: UpstreamError = {
@@ -290,8 +296,40 @@ export class AnthropicStreamNormalizer extends BaseNormalizer {
       }
       case "ping":
         break;
-      default:
-        break; // unknown event types tolerated
+      default: {
+        // Non-canonical error envelopes (e.g. type "request_error", or any
+        // payload carrying an `error` object) still terminate the stream —
+        // swallowing them would defer failure to close()'s generic message.
+        const errPayload =
+          payload.error && typeof payload.error === "object"
+            ? payload.error
+            : typeof type === "string" && /error/i.test(type)
+              ? payload
+              : undefined;
+        if (errPayload) {
+          const err: UpstreamError = {
+            source: "provider",
+            message:
+              typeof (errPayload as { message?: unknown }).message === "string"
+                ? (errPayload as { message: string }).message
+                : `provider stream error (${String(type ?? "unknown")})`,
+            body: data.slice(0, 2048),
+            providerId: this.providerId,
+            requestId: this.requestId,
+          };
+          out.push(this.emit("error", err));
+        } else {
+          // Genuinely unknown event: tolerate it, but emit a structured
+          // warning so the stream is observable instead of silently dropped.
+          out.push(
+            this.emit("warning", {
+              kind: "unknown-event",
+              eventType: typeof type === "string" ? type : null,
+            }),
+          );
+        }
+        break;
+      }
     }
     return out;
   }

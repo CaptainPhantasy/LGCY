@@ -16,7 +16,9 @@ export type ProjectKind =
   | "git"
   | "unknown";
 
-/** Markers that, when present, identify the project root and kind. */
+/** Markers that, when present, identify the project root and kind.
+ *  PRECEDENCE IS EXPLICIT: when several markers exist in one directory, the
+ *  earliest entry in this list wins (bun.lock before package.json, etc.). */
 const MARKERS: Array<{ file: string; kind: ProjectKind }> = [
   { file: "bun.lock", kind: "bun" },
   { file: "bun.lockb", kind: "bun" },
@@ -47,16 +49,21 @@ export class ProjectService {
   /**
    * Discover the project root from a starting directory, walking up until a
    * marker is found or the filesystem root is reached.
+   *
+   * Marker checks per directory run in parallel (Promise.all); precedence
+   * between markers follows MARKERS order (see above).
+   *
+   * Symlink policy (documented): paths are LEXICAL — resolve() is used, not
+   * realpath(). Marker probing follows symlinks at the filesystem level
+   * (access()), and a symlinked start directory yields the symlink's path
+   * as root. This is intentional: the root is what the user navigated to.
    */
   async discover(startDir = process.cwd()): Promise<ProjectInfo> {
     let dir = resolve(startDir);
-    // Track the highest-priority kind found (first in MARKERS wins).
     for (;;) {
-      for (const { file, kind } of MARKERS) {
-        if (await this.exists(join(dir, file))) {
-          return { root: dir, name: basename(dir), kind };
-        }
-      }
+      const hits = await Promise.all(MARKERS.map((m) => this.exists(join(dir, m.file))));
+      const idx = hits.findIndex(Boolean);
+      if (idx >= 0) return { root: dir, name: basename(dir), kind: MARKERS[idx]!.kind };
       const parent = dirname(dir);
       if (parent === dir) break; // filesystem root
       dir = parent;

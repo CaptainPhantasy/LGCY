@@ -98,7 +98,7 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
     id: "help",
     description: "List available commands",
     run: (_argv, ctx) => {
-      ctx.print("Commands: /help /providers /model <id> /tasks /clear /exit");
+      ctx.print("Commands: /help /providers /provider <id> /model <id> /tasks /clear /exit");
     },
   });
   reg.register({
@@ -109,6 +109,23 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
         const flag = p.enabled ? "\u2713" : "\u2717";
         ctx.print(`${flag} ${p.id} (${p.dialect}) → ${p.baseUrl}`);
       }
+    },
+  });
+  reg.register({
+    id: "provider",
+    description: "Set default provider",
+    run: async (argv, ctx) => {
+      if (argv.length < 2) {
+        ctx.print("usage: /provider <id>");
+        return;
+      }
+      const found = ctx.state.registry.list().find((p) => p.id === argv[1]);
+      if (!found) {
+        ctx.print(`unknown provider: ${argv[1]}`);
+        return;
+      }
+      await ctx.state.settings.update({ defaultProviderId: found.id });
+      ctx.print(`default provider set to ${found.id}`);
     },
   });
   reg.register({
@@ -127,7 +144,7 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
     id: "tasks",
     description: "List tasks",
     run: (_argv, ctx) => {
-      const list = ctx.state.tasks.list();
+      const list = ctx.state.tasks.list({ grouped: true });
       if (list.length === 0) {
         ctx.print("(no tasks)");
         return;
@@ -190,15 +207,18 @@ async function runInteractive(
   const stdout = process.stdout;
   stdin.setRawMode(true);
   stdin.resume();
-  const cols = stdout.columns || 80;
-  const rows = stdout.rows || 24;
+  // Terminal dimensions are re-read on every SIGWINCH — never cached once.
+  let cols = stdout.columns || 80;
+  let rows = stdout.rows || 24;
 
   const decoder = new KeyDecoder();
   const renderer = new Renderer();
   const log: string[] = [banner(ctx, brokerHealthy, projectInfo)];
   let input = "";
   let settings: AppSettings = await ctx.settings.load();
-  const defaultProvider = settings.defaultProviderId ?? ctx.registry.list()[0]?.id ?? "openai";
+  // Provider is resolved lazily from the LATEST settings on every prompt, so
+  // /provider takes effect immediately instead of being fixed at startup.
+  const providerId = () => settings.defaultProviderId ?? ctx.registry.list()[0]?.id ?? "openai";
 
   const render = () => {
     const buf = new ScreenBuffer(cols, rows);
@@ -216,67 +236,118 @@ async function runInteractive(
     stdout.write(cursorToEnd(rows));
   };
 
+  const onResize = () => {
+    cols = stdout.columns || 80;
+    rows = stdout.rows || 24;
+    renderer.reset(); // dimension change → full repaint
+    render();
+  };
+  stdout.on("resize", onResize);
+
   const state: CommandState = { settings: ctx.settings, registry: ctx.registry, tasks: ctx.tasks, output: [] };
-  const print = (text: string) => log.push(text);
+
+  // Chat messages are persisted to a session (scrubbed at the boundary).
+  // The session is created lazily on the first user message.
+  let sessionId: string | undefined;
+  const ensureSession = async (titleSeed: string): Promise<string> => {
+    if (!sessionId) {
+      sessionId = `chat-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+      await ctx.sessions.create(sessionId, {
+        title: truncate(titleSeed, 40),
+        providerId: providerId(),
+        createdAt: Date.now(),
+      });
+    }
+    return sessionId;
+  };
 
   stdout.write(ALT_ENTER + HIDE_CURSOR);
-  render();
+  try {
+    render();
 
-  let exiting = false;
-  for await (const chunk of stdin) {
-    const keys = decoder.feed(chunk as Uint8Array);
-    for (const key of keys) {
-      if (key.ctrl && key.key === "c") {
-        exiting = true;
-        break;
-      }
-      if (key.key === "Enter") {
-        const line = input;
-        input = "";
-        if (line.trim().length === 0) {
+    let exiting = false;
+    for await (const chunk of stdin) {
+      const keys = decoder.feed(chunk as Uint8Array);
+      for (const key of keys) {
+        if (key.ctrl && key.key === "c") {
+          exiting = true;
+          break;
+        }
+        // Ctrl+D (EOT) on an empty input line exits, matching REPL convention.
+        if (key.ctrl && key.key === "d" && input.length === 0) {
+          exiting = true;
+          break;
+        }
+        if (key.key === "Enter") {
+          const line = input;
+          input = "";
+          if (line.trim().length === 0) {
+            render();
+            continue;
+          }
+          if (line.startsWith("/")) {
+            state.output = [];
+            const matched = await ctx.commands.execute(line, { state, print: (t) => state.output.push(t) });
+            if (state.output.includes("__exit__")) {
+              exiting = true;
+              break;
+            }
+            log.push(`${line}`);
+            for (const o of state.output) log.push(o);
+            void matched;
+          } else {
+            log.push(`\u276F ${line}`);
+            render();
+            try {
+              const sid = await ensureSession(line);
+              await ctx.sessions.append(sid, "message", { role: "user", content: line });
+              const reply = await sendAndStream(ctx, providerId(), settings.defaultModel, line, log, render);
+              if (reply !== undefined) {
+                await ctx.sessions.append(sid, "message", { role: "assistant", content: reply });
+              }
+            } catch (e) {
+              log.push(`warning: session persistence failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+          settings = await ctx.settings.load();
           render();
           continue;
         }
-        if (line.startsWith("/")) {
-          state.output = [];
-          const matched = await ctx.commands.execute(line, { state, print: (t) => state.output.push(t) });
-          if (state.output.includes("__exit__")) {
-            exiting = true;
-            break;
-          }
-          log.push(`${line}`);
-          for (const o of state.output) log.push(o);
-          void matched;
-        } else {
-          log.push(`\u276F ${line}`);
-          await sendAndStream(ctx, defaultProvider, settings.defaultModel, line, log, render);
+        if (key.key === "Backspace") {
+          input = input.slice(0, -1);
+          render();
+          continue;
         }
-        settings = await ctx.settings.load();
-        render();
-        continue;
+        if (key.key === "Escape") {
+          input = "";
+          render();
+          continue;
+        }
+        if (key.key.length === 1 || (key.key.length > 1 && !isControlName(key.key))) {
+          input += key.key;
+          render();
+        }
       }
-      if (key.key === "Backspace") {
-        input = input.slice(0, -1);
-        render();
-        continue;
-      }
-      if (key.key === "Escape") {
-        input = "";
-        render();
-        continue;
-      }
-      if (key.key.length === 1 || (key.key.length > 1 && !isControlName(key.key))) {
-        input += key.key;
-        render();
-      }
+      if (exiting) break;
     }
-    if (exiting) break;
+  } finally {
+    // Alt-screen + cursor + raw mode are restored on EVERY exit path
+    // (Ctrl+C, Ctrl+D, /exit, stream close, or an exception in the loop).
+    stdout.off("resize", onResize);
+    try {
+      stdin.setRawMode(false);
+    } catch {
+      // stdin may already be detached/closed — restoration is best-effort.
+    }
+    stdout.write(SHOW_CURSOR + ALT_LEAVE);
   }
-
-  stdout.write(SHOW_CURSOR + ALT_LEAVE);
-  stdin.setRawMode(false);
 }
 
+/**
+ * Stream a chat response into the log. Returns the accumulated assistant
+ * text on success (so callers can persist it), or undefined when no text
+ * was produced (error or empty stream).
+ */
 export async function sendAndStream(
   ctx: AppContext,
   providerId: string,
@@ -284,11 +355,11 @@ export async function sendAndStream(
   text: string,
   log: string[],
   render: () => void,
-): Promise<void> {
+): Promise<string | undefined> {
   if (!model) {
     log.push("(no default model set — use /model <name>)");
     render();
-    return;
+    return undefined;
   }
   const messages: UnifiedMessage[] = [{ role: "user", content: text }];
   const request: UnifiedChatRequest = { providerId, model, messages, stream: true };
@@ -304,16 +375,17 @@ export async function sendAndStream(
         const err = ev.data as { message: string };
         log.push(`error: ${err.message}`);
         render();
-        return;
+        return undefined;
       }
     }
   } catch (e) {
     log.push(`error: ${e instanceof Error ? e.message : String(e)}`);
     render();
-    return;
+    return undefined;
   }
   if (acc.length > 0) log[responseIndex] = acc;
   render();
+  return acc.length > 0 ? acc : undefined;
 }
 
 function truncate(s: string, max: number): string {

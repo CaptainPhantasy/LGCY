@@ -5,7 +5,7 @@
  * to prevent escaping the project boundary.
  */
 
-import { readFile, writeFile, readdir, mkdir, stat, access, realpath } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, stat, access, realpath, rename, rm } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute, dirname, parse, sep } from "node:path";
 
 export class FileNotFoundError extends Error {
@@ -66,11 +66,25 @@ export class FileService {
     return readFile(abs, "utf-8");
   }
 
+  /**
+   * Write via a temp file in the validated directory + atomic rename. This
+   * closes the TOCTOU window between the realpath parent check and the
+   * write: even if the parent directory is swapped for a symlink after
+   * validation, rename() replaces the destination entry itself (and never
+   * follows a destination symlink) within the same validated directory.
+   */
   async writeText(path: string, content: string): Promise<void> {
     const abs = this.resolve(path);
     await this.#assertWritableParentInsideRoot(abs, path);
     await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, content, "utf-8");
+    const tmp = join(dirname(abs), `.lgcy-tmp-${process.pid}-${crypto.randomUUID()}`);
+    try {
+      await writeFile(tmp, content, "utf-8");
+      await rename(tmp, abs);
+    } catch (e) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw e;
+    }
   }
 
   async listDir(path = "."): Promise<DirEntry[]> {
@@ -80,13 +94,16 @@ export class FileService {
     const out: DirEntry[] = [];
     for (const de of names) {
       const fullPath = join(abs, de.name);
-      let size = 0;
-      try {
-        size = (await stat(fullPath)).size;
-      } catch {
-        /* broken symlink etc. */
-      }
-      out.push({ name: de.name, path: fullPath, isDirectory: de.isDirectory(), size });
+      // stat() follows symlinks, so type/size describe the REAL target, not
+      // the link. A symlink to a file inside the root reports isDirectory:
+      // false with the target's size. Broken links fall back to the Dirent.
+      const st = await stat(fullPath).catch(() => null);
+      out.push({
+        name: de.name,
+        path: fullPath,
+        isDirectory: st ? st.isDirectory() : de.isDirectory(),
+        size: st?.size ?? 0,
+      });
     }
     return out.sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;

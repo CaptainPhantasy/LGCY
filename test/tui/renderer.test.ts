@@ -99,3 +99,55 @@ describe("Renderer", () => {
     expect(stripAnsi(out)).toBe("xyz");
   });
 });
+
+describe("Renderer — item #8/#57 dimension-change full paint", () => {
+  test("shrinking buffer resets screen with CLEAR_SCREEN", () => {
+    const r = new Renderer();
+    const big = new ScreenBuffer(5, 2);
+    big.writeText(0, 0, "hello");
+    big.writeText(0, 1, "world");
+    r.render(big);
+    const small = new ScreenBuffer(3, 1);
+    small.writeText(0, 0, "abc");
+    const out = r.render(small);
+    expect(out.startsWith("\x1b[2J")).toBe(true);
+  });
+  test("growing buffer also full-paints", () => {
+    const r = new Renderer();
+    r.render(new ScreenBuffer(2, 1));
+    const out = r.render(new ScreenBuffer(3, 2));
+    expect(out.startsWith("\x1b[2J")).toBe(true);
+  });
+});
+
+describe("Renderer — item #41 style reused across rows in fullPaint", () => {
+  test("same bold style on both rows emits SGR once, not twice", () => {
+    const r = new Renderer();
+    const buf = new ScreenBuffer(3, 2);
+    buf.fillRow(0, 0, 2, " ", { bold: true });
+    buf.fillRow(1, 0, 2, " ", { bold: true });
+    const out = r.render(buf);
+    // sgr({bold:true}) = \x1b[0;1m — should appear exactly once
+    const occurrences = out.split("\x1b[0;1m").length - 1;
+    expect(occurrences).toBe(1);
+  });
+});
+
+describe("Renderer — item #42 diffPaint ends with RESET", () => {
+  test("changed cell output ends with RESET", () => {
+    const r = new Renderer();
+    const b = new ScreenBuffer(3, 1);
+    b.writeText(0, 0, "abc");
+    r.render(b);
+    const next = b.clone();
+    next.setCell(1, 0, "X");
+    const out = r.render(next);
+    expect(out.endsWith("\x1b[0m")).toBe(true);
+  });
+  test("no-change renders empty (no trailing RESET)", () => {
+    const r = new Renderer();
+    const b = new ScreenBuffer(3, 1);
+    r.render(b);
+    expect(r.render(b.clone())).toBe("");
+  });
+});

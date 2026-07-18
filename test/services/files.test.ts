@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { rm, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { rm, mkdtemp, symlink, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileService, FileNotFoundError } from "../../src/services/files";
@@ -105,5 +105,35 @@ describe("FileService", () => {
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+
+  test("writeText leaves no temp file after success (#12)", async () => {
+    const fs = new FileService({ root: dir });
+    await fs.writeText("clean.txt", "hello");
+    const entries = await fs.listDir(".");
+    const tempFiles = entries.filter((e) => e.name.startsWith(".lgcy-tmp-"));
+    expect(tempFiles).toHaveLength(0);
+  });
+
+  test("listDir reports real type via stat, not Dirent, inside root (#13)", async () => {
+    const realFile = join(dir, "real-data.txt");
+    const realDir = join(dir, "real-dir");
+    await writeFile(realFile, "content", "utf-8");
+    await mkdir(realDir);
+    // Symlink to file
+    const link = join(dir, "link-to-file");
+    await symlink(realFile, link);
+    // Symlink to dir
+    const linkDir = join(dir, "link-to-dir");
+    await symlink(realDir, linkDir);
+    const fs = new FileService({ root: dir });
+    const entries = await fs.listDir(".");
+    const f = entries.find((e) => e.name === "link-to-file")!;
+    expect(f).toBeDefined();
+    expect(f.isDirectory).toBe(false);
+    expect(f.size).toBe("content".length);
+    const d = entries.find((e) => e.name === "link-to-dir")!;
+    expect(d).toBeDefined();
+    expect(d.isDirectory).toBe(true);
   });
 });

@@ -1,9 +1,11 @@
 /**
  * Git service — read-only git status and diff via subprocess. Runs git in the
  * workspace root and parses porcelain output. Never writes to the repo.
+ *
+ * The default runner enforces a hard process timeout (default 10 s) so a hung
+ * git process cannot block the caller forever, and classifies a missing git
+ * binary as GitNotFoundError with an install hint.
  */
-
-import { type FileService } from "./files";
 
 export interface GitStatusEntry {
   path: string;
@@ -18,9 +20,27 @@ export interface GitStatus {
   clean: boolean;
 }
 
+/** git executable not found on PATH. */
+export class GitNotFoundError extends Error {
+  constructor(bin: string) {
+    super(`git executable not found: "${bin}" — install git and ensure it is on PATH`);
+    this.name = "GitNotFoundError";
+  }
+}
+
+/** git process exceeded the configured timeout and was killed. */
+export class GitTimeoutError extends Error {
+  constructor(args: string[], timeoutMs: number) {
+    super(`git ${args.join(" ")} timed out after ${timeoutMs}ms and was killed`);
+    this.name = "GitTimeoutError";
+  }
+}
+
 export interface GitServiceOptions {
   /** Injectable command runner for tests; defaults to a real subprocess. */
   runner?: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /** Hard timeout for the default runner; default 10 s. */
+  timeoutMs?: number;
 }
 
 export class GitService {
@@ -29,7 +49,8 @@ export class GitService {
 
   constructor(root: string, opts: GitServiceOptions = {}) {
     this.#root = root;
-    this.#runner = opts.runner ?? defaultRunner;
+    this.#runner =
+      opts.runner ?? ((args, cwd) => defaultRunner(args, cwd, { timeoutMs: opts.timeoutMs }));
   }
 
   /** True if the workspace root is inside a git repository. */
@@ -48,8 +69,7 @@ export class GitService {
       if (line.length === 0) continue;
       // Branch header: "## main...origin/main [ahead 1]"
       if (line.startsWith("## ")) {
-        const m = /^## (.+?)(?:\.\.\.|$)/.exec(line);
-        branch = m ? m[1]! : line.slice(3);
+        branch = parseBranchHeader(line.slice(3));
         continue;
       }
       // Porcelain: "XY path" where XY are two status chars.
@@ -71,25 +91,73 @@ export class GitService {
   }
 }
 
+/**
+ * Parse the "## ..." header of `git status -b`. Handles the two non-branch
+ * forms explicitly: detached HEAD ("HEAD (no branch)") and an unborn branch
+ * ("No commits yet on main").
+ */
+export function parseBranchHeader(header: string): string {
+  if (header === "HEAD (no branch)") return "(detached HEAD)";
+  const unborn = "No commits yet on ";
+  if (header.startsWith(unborn)) {
+    return header.slice(unborn.length).split("...")[0]!.trim();
+  }
+  const m = /^(.+?)(?:\.\.\.|$)/.exec(header);
+  return m ? m[1]! : header;
+}
+
+export interface DefaultRunnerOptions {
+  /** Hard kill timeout; default 10 000 ms. */
+  timeoutMs?: number;
+  /** Executable to spawn; default "git" (overridable for tests). */
+  bin?: string;
+}
+
+const DEFAULT_GIT_TIMEOUT_MS = 10_000;
+
+// Helper so the literal "pipe" options flow into the inferred return type.
+function spawnGit(bin: string, args: string[], cwd: string) {
+  return Bun.spawn({ cmd: [bin, ...args], cwd, stdout: "pipe", stderr: "pipe" });
+}
+
 export const defaultRunner = async (
   args: string[],
   cwd: string,
+  opts: DefaultRunnerOptions = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
-  const proc = Bun.spawn({
-    cmd: ["git", ...args],
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const exitCode = await proc.exited;
-  return { stdout, stderr, exitCode };
+  const bin = opts.bin ?? "git";
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
+  let proc: ReturnType<typeof spawnGit>;
+  try {
+    proc = spawnGit(bin, args, cwd);
+  } catch (e) {
+    if (isEnoent(e)) throw new GitNotFoundError(bin);
+    throw e;
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      proc.kill();
+    } catch {
+      /* already exited */
+    }
+  }, timeoutMs);
+  try {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+    if (timedOut) throw new GitTimeoutError(args, timeoutMs);
+    return { stdout, stderr, exitCode };
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
-// FileService import kept for the composition-root convenience below.
-export function gitForWorkspace(files: FileService): GitService {
-  return new GitService(files.root);
+function isEnoent(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as { code?: unknown }).code;
+  return code === "ENOENT" || /ENOENT|no such file|not found/i.test(e.message);
 }

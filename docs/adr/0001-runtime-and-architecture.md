@@ -34,7 +34,10 @@ cycle 1 (see docs/loop/PROGRESS.md):
    - `src/broker/` — omp auth-broker client (credential references). Imports
      `core` only.
    - `src/services/` — sessions, projects, git, files, PTY, tasks. Imports
-     `core`, `broker`, `gateway`.
+     `core`, `broker`, `gateway`. Sibling imports WITHIN services/ are
+     explicitly permitted (e.g. `TaskStore` persists through the `SessionStore`
+     type); the boundary test enforces this as an intentional carve-out, not
+     an oversight.
    - `src/tui/` — renderer, layout, focus, keymap, command registry,
      surfaces. Imports `core` + `services` events only; never provider wire
      types.

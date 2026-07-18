@@ -63,6 +63,27 @@ describe("ScreenBuffer", () => {
   });
 });
 
+describe("ScreenBuffer — item #7 wide-grapheme handling", () => {
+  test("emoji outside BMP renders as ?", () => {
+    const b = new ScreenBuffer(4, 1);
+    b.writeText(0, 0, "a\u{1F642}b");
+    expect(b.getCell(0, 0).char).toBe("a");
+    expect(b.getCell(1, 0).char).toBe("?"); // U+1F642
+    expect(b.getCell(2, 0).char).toBe("b");
+  });
+});
+
+describe("ScreenBuffer — item #10 clear shares cell objects safely", () => {
+  test("clear with default arg fills grid; setCell replaces only target", () => {
+    const b = new ScreenBuffer(3, 2);
+    b.clear(".");
+    b.setCell(0, 0, "x");
+    expect(b.getCell(0, 0).char).toBe("x");
+    expect(b.getCell(1, 0).char).toBe(".");
+    expect(b.getCell(0, 1).char).toBe(".");
+  });
+});
+
 describe("cellEqual", () => {
   test("same char + style equal", () => {
     expect(cellEqual(EMPTY_CELL, { char: " ", style: undefined })).toBe(true);

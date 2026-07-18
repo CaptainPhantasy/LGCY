@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   BrokerClient,
   BrokerError,
   extractSecret,
+  parseSnapshot,
   type BrokerSnapshot,
   type FetchImpl,
 } from "../../src/broker/client";
@@ -160,5 +164,140 @@ describe("BrokerClient", () => {
     const c = new BrokerClient({ token: "tok-123", fetchImpl: fetch, now: () => 0 });
     await c.snapshot();
     expect(calls[0]!.headers.authorization).toBe("Bearer tok-123");
+  });
+});
+
+describe("parseSnapshot (#14)", () => {
+  test("valid snapshot parses and strips unknown credential fields", () => {
+    const parsed = parseSnapshot({
+      generation: 2,
+      generatedAt: 500,
+      serverNowMs: 600,
+      refresher: { enabled: true, intervalMs: 120000, skewMs: 2000, nextSweepInMs: 110000 },
+      credentials: [
+        {
+          id: 1,
+          provider: "x",
+          credential: { type: "api_key", key: "k", ssn: "123-45-6789" },
+          identityKey: null,
+          rotatesInMs: 60000,
+        },
+      ],
+    });
+    expect(parsed.credentials[0]!.credential).toEqual({ type: "api_key", key: "k" });
+    expect((parsed.credentials[0]!.credential as unknown as Record<string, unknown>).ssn).toBeUndefined();
+  });
+  test("rejects non-object", () => {
+    expect(() => parseSnapshot(null)).toThrow(BrokerError);
+    expect(() => parseSnapshot("str")).toThrow(BrokerError);
+  });
+  test("rejects missing credentials", () => {
+    expect(() => parseSnapshot({ generation: 1, generatedAt: 1, serverNowMs: 1, refresher: {} })).toThrow(BrokerError);
+  });
+  test("strips unknown top-level fields", () => {
+    const parsed = parseSnapshot({
+      generation: 1,
+      generatedAt: 1,
+      serverNowMs: 1,
+      refresher: {},
+      credentials: [{ provider: "x", credential: { type: "api_key", key: "k" } }],
+      secretPayload: "hidden",
+    });
+    expect((parsed as unknown as Record<string, unknown>).secretPayload).toBeUndefined();
+  });
+});
+
+describe("BrokerClient item #1 — token file cache + reload", () => {
+  let tmpDir: string;
+  beforeAll(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "lgcy-broker-"));
+  });
+  afterAll(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("reloadToken re-reads the file; #fileToken separated from constructor token", async () => {
+    const tokenFile = join(tmpDir, "token.txt");
+    await writeFile(tokenFile, "tok-v1\n");
+    let lastAuthToken: string | undefined;
+    const fetch = (async (input: URL | string, init?: RequestInit) => {
+      const h = Object.fromEntries(new Headers(init?.headers).entries());
+      lastAuthToken = h.authorization?.replace("Bearer ", "");
+      return new Response(JSON.stringify(snapshot()), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as FetchImpl;
+    // No constructor token — reads from file.
+    const c = new BrokerClient({ tokenFile, fetchImpl: fetch, now: () => 0 });
+    await c.snapshot();
+    expect(lastAuthToken).toBe("tok-v1");
+    // Rotate the file behind our back.
+    await writeFile(tokenFile, "tok-v2\n");
+    c.reloadToken();
+    await c.snapshot(true);
+    expect(lastAuthToken).toBe("tok-v2");
+  });
+
+  test("401 clears file token cache so next read picks up new file token", async () => {
+    const tokenFile = join(tmpDir, "token401.txt");
+    await writeFile(tokenFile, "stale\n");
+    let call = 0;
+    const fetch = (async (_input: URL | string, init?: RequestInit) => {
+      call++;
+      if (call === 1) return new Response("", { status: 401 });
+      // After the cached file token was cleared, the client re-reads the file
+      // and sends the new token on the second call.
+      const h = Object.fromEntries(new Headers(init?.headers).entries());
+      expect(h.authorization).toBe("Bearer fresh");
+      return new Response(JSON.stringify(snapshot()), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as FetchImpl;
+    const c = new BrokerClient({ tokenFile, fetchImpl: fetch, now: () => 0 });
+    await writeFile(tokenFile, "fresh\n");
+    await expect(c.snapshot()).rejects.toThrow(/401/);
+    expect(c.snapshot()).resolves.toBeTruthy();
+  });
+});
+
+describe("BrokerClient item #2 — per-credential rotation vs minTtlMs floor", () => {
+  test("stale credential triggers force refresh even when snapshot TTL not exhausted", async () => {
+    let fetches = 0;
+    const slowSnapshot = (generation: number, rotatesInMs: number): BrokerSnapshot => ({
+      generation,
+      generatedAt: 1000,
+      serverNowMs: 1000,
+      refresher: { enabled: true, intervalMs: 60000, skewMs: 0, nextSweepInMs: 50000 },
+      credentials: [{ id: 1, provider: "fast", credential: { type: "api_key", key: "v" }, identityKey: null, rotatesInMs }],
+    });
+    const fetch = (async () => {
+      fetches++;
+      return new Response(JSON.stringify(slowSnapshot(fetches, 500)), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as FetchImpl;
+    // rotatesInMs=500, minTtlMs=1000. At t=750 the credential window is stale
+    // but the minTtl floor keeps the cache alive — per-credential kicks in.
+    let clock = 0;
+    const c = new BrokerClient({ fetchImpl: fetch, now: () => clock, token: "t", minTtlMs: 1000, defaultTtlMs: 60000 });
+    await c.resolve("fast");
+    expect(fetches).toBe(1);
+    clock = 750; // within minTtl floor (1000), past credential window (500)
+    const secret = await c.resolve("fast");
+    expect(secret).toBe("v");
+    expect(fetches).toBe(2); // per-credential forced a refresh
+  });
+});
+
+describe("BrokerClient item #15 — health timeout", () => {
+  test("slow broker returns false (offline) instead of hanging", async () => {
+    const fetch = (async (_input: URL | string, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const e = new Error("aborted");
+          e.name = "AbortError";
+          reject(e);
+        });
+      });
+    }) as unknown as FetchImpl;
+    const c = new BrokerClient({ token: "t", fetchImpl: fetch, healthTimeoutMs: 10 });
+    expect(await c.health()).toBe(false);
   });
 });

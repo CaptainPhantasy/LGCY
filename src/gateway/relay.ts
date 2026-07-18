@@ -16,6 +16,7 @@ import type {
   UnifiedStreamEvent,
   UpstreamError,
 } from "../core/contracts";
+import { ALWAYS_SECRET_KEY_RE, GENERIC_SECRET_KEY_RE, looksLikeSecret, scrubString } from "../core/secrets";
 import { createNormalizer, type Normalizer } from "./normalize";
 import { SseParser } from "./sse";
 import { ProviderRegistry, authHeaders, completionUrl } from "./providers";
@@ -39,16 +40,43 @@ export interface RelayCallOptions {
 
 const MAX_ERROR_BODY_BYTES = 8192;
 
-/** Best-effort redaction of common secret shapes in an upstream error body. */
-function redactBody(text: string): string {
+/**
+ * Best-effort redaction of common secret shapes in an upstream error body.
+ * When the body is JSON it is parsed and redacted structurally (key-name
+ * aware, escape-safe); non-JSON text falls back to regex patterns.
+ */
+function redactBody(text: string, contentType?: string): string {
   const limited =
     text.length > MAX_ERROR_BODY_BYTES
       ? text.slice(0, MAX_ERROR_BODY_BYTES) + "…[truncated]"
       : text;
-  return limited
-    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
-    .replace(/(Bearer\s+)[^\s"']+/gi, "$1[redacted]")
-    .replace(/("(?:api[_-]?key|key|token|authorization)"\s*:\s*")[^"]+"/gi, '$1[redacted]"');
+  if (contentType && /\bjson\b/i.test(contentType)) {
+    try {
+      return JSON.stringify(redactValue(JSON.parse(limited)));
+    } catch {
+      // Not actually parseable — fall through to the regex path.
+    }
+  }
+  return scrubString(limited).replace(
+    /("(?:api[_-]?key|key|token|authorization)"\s*:\s*")[^"]+"/gi,
+    '$1[redacted]"',
+  );
+}
+
+/** Recursive structured redactor for parsed JSON error bodies. */
+function redactValue(value: unknown): unknown {
+  if (typeof value === "string") return scrubString(value);
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (ALWAYS_SECRET_KEY_RE.test(k)) out[k] = "[redacted]";
+      else if (GENERIC_SECRET_KEY_RE.test(k) && looksLikeSecret(v)) out[k] = "[redacted]";
+      else out[k] = redactValue(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 function isAbortError(e: unknown): boolean {
@@ -96,6 +124,19 @@ export class GatewayRelay {
       now,
     });
     const fail = (err: UpstreamError): UnifiedStreamEvent[] => normalizer.terminateWithError(err);
+
+    // Short-circuit when the caller's signal is already aborted: emit an
+    // explicit cancelled terminal without touching the network, so the
+    // lifecycle shows a requestAbort transition instead of a transport error.
+    if (opts.signal?.aborted) {
+      for (const ev of fail({
+        source: "cancelled",
+        message: "request aborted before dispatch",
+        providerId: config.id,
+        requestId,
+      })) yield ev;
+      return;
+    }
 
     // Translate the unified request to the provider wire body.
     let body: Record<string, unknown>;
@@ -168,7 +209,7 @@ export class GatewayRelay {
         source: "provider",
         status: resp.status,
         contentType: resp.headers.get("content-type") ?? undefined,
-        body: redactBody(text),
+        body: redactBody(text, resp.headers.get("content-type") ?? undefined),
         message: `provider responded ${resp.status}`,
         providerId: config.id,
         requestId,
@@ -188,13 +229,16 @@ export class GatewayRelay {
     }
 
     // Pipe the byte stream through the SSE parser → normalizer → unified events.
-    yield* this.#pipe(resp.body, normalizer, () => {
-      // Determine the cause when the read itself throws.
-      const source: UpstreamError["source"] = userAborted()
-        ? "cancelled"
-        : "gateway-transport";
-      return source;
-    }, config.id, requestId);
+    // userAborted is polled between reads AND between normalized events so a
+    // caller cancel takes effect even when bytes are already buffered.
+    yield* this.#pipe(
+      resp.body,
+      normalizer,
+      () => (userAborted() ? "cancelled" : "gateway-transport"),
+      config.id,
+      requestId,
+      userAborted,
+    );
   }
 
   async *#pipe(
@@ -203,11 +247,23 @@ export class GatewayRelay {
     readErrorSource: () => UpstreamError["source"],
     providerId: string,
     requestId: string,
+    isAborted: () => boolean,
   ): AsyncGenerator<UnifiedStreamEvent> {
     const parser = new SseParser();
     const reader = body.getReader();
+    const abortEvents = (): UnifiedStreamEvent[] =>
+      normalizer.terminateWithError({
+        source: "cancelled",
+        message: "request aborted by caller",
+        providerId,
+        requestId,
+      });
     try {
       while (true) {
+        if (isAborted()) {
+          for (const ev of abortEvents()) yield ev;
+          return;
+        }
         let readResult: IteratorResult<Uint8Array>;
         try {
           readResult = await reader.read();
@@ -221,9 +277,22 @@ export class GatewayRelay {
           })) yield ev;
           return;
         }
-        if (readResult.done) break;
+        if (readResult.done) {
+          // The stream may have been closed by a concurrent abort; check
+          // before proceeding to parser.close() so the terminal event
+          // says "cancelled" instead of a generic stream failure.
+          if (isAborted()) {
+            for (const ev of abortEvents()) yield ev;
+            return;
+          }
+          break;
+        }
         for (const sseEvent of parser.push(readResult.value)) {
           if (normalizer.terminated) break;
+          if (isAborted()) {
+            for (const ev of abortEvents()) yield ev;
+            return;
+          }
           for (const ev of normalizer.handle(sseEvent)) yield ev;
         }
         if (normalizer.terminated) return;

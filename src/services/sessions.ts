@@ -11,6 +11,10 @@
 import { appendFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { scrubSecrets } from "../core/secrets";
+
+// Re-exported for backward compatibility; the implementation lives in core.
+export { scrubSecrets } from "../core/secrets";
 
 export const CURRENT_SCHEMA_VERSION = 1;
 
@@ -26,6 +30,8 @@ export interface SessionEntry<T = unknown> {
   timestamp: number;
   type: string;
   data: T;
+  /** True when the persistence-boundary scrubber modified the payload. */
+  redacted?: boolean;
 }
 
 export interface LoadedSession {
@@ -49,6 +55,12 @@ export class SessionStore {
   readonly #baseDir: string;
   readonly #migrations: Map<number, Migration>;
   readonly #scrubber: SecretScrubber;
+  /**
+   * Highest known seq per session, cached so append() is O(1) instead of
+   * re-reading the whole JSONL file per write. The cache is per-instance:
+   * appends from OTHER processes are not tracked (documented limitation).
+   */
+  readonly #nextSeq = new Map<string, number>();
 
   constructor(opts: StoreOptions = {}) {
     this.#baseDir = opts.baseDir ?? join(homedir(), ".lgcy", "sessions");
@@ -71,25 +83,34 @@ export class SessionStore {
       meta,
     };
     await appendFile(path, `${JSON.stringify(header)}\n`, "utf-8");
+    this.#nextSeq.set(sessionId, 0);
     return path;
   }
 
   /** Append an entry. Returns the assigned monotonic sequence number. */
   async append(sessionId: string, type: string, data: unknown): Promise<number> {
-    const { entries } = await this.load(sessionId).catch(() => ({
-      entries: [] as SessionEntry[],
-    }));
-    const seq = entries.length > 0 ? entries[entries.length - 1]!.seq + 1 : 0;
-    const line = {
+    let seq = this.#nextSeq.get(sessionId);
+    if (seq === undefined) {
+      const { entries } = await this.load(sessionId).catch(() => ({
+        entries: [] as SessionEntry[],
+      }));
+      seq = entries.length > 0 ? entries[entries.length - 1]!.seq + 1 : 0;
+    }
+    const scrubbedData = this.#scrubber(data);
+    const line: Record<string, unknown> = {
       v: CURRENT_SCHEMA_VERSION,
       kind: "entry" as const,
       sessionId,
       seq,
       timestamp: Date.now(),
       type,
-      data: this.#scrubber(data),
+      data: scrubbedData,
     };
+    // Record whether the scrubber modified the payload so consumers can tell
+    // "user passed clean data" apart from "the store redacted something".
+    if (!jsonEqual(data, scrubbedData)) line.redacted = true;
     await appendFile(this.pathFor(sessionId), `${JSON.stringify(line)}\n`, "utf-8");
+    this.#nextSeq.set(sessionId, seq + 1);
     return seq;
   }
 
@@ -113,19 +134,31 @@ export class SessionStore {
       if (parsed.kind === "header") {
         meta = parsed.meta as SessionMeta;
       } else if (parsed.kind === "entry") {
-        entries.push({
+        const entry: SessionEntry = {
           seq: parsed.seq as number,
           timestamp: parsed.timestamp as number,
           type: parsed.type as string,
           data: parsed.data,
-        });
+        };
+        if (parsed.redacted === true) entry.redacted = true;
+        entries.push(entry);
       }
     }
     if (!meta) throw new Error(`session ${sessionId}: missing or no header`);
-    return { sessionId, meta, schemaVersion, entries };
+    const loaded = { sessionId, meta, schemaVersion, entries };
+    // Keep the seq cache at least as high as anything observed on disk.
+    if (entries.length > 0) {
+      const hi = entries[entries.length - 1]!.seq + 1;
+      if ((this.#nextSeq.get(sessionId) ?? 0) < hi) this.#nextSeq.set(sessionId, hi);
+    }
+    return loaded;
   }
 
-  /** Summarize every persisted session (id, meta, entry count). */
+  /**
+   * Summarize every persisted session (id, meta, entry count). Header-only
+   * scan: only the FIRST line of each file is JSON.parsed; entry counts come
+   * from a line count, so listing stays fast even with many long sessions.
+   */
   async list(): Promise<Array<{ sessionId: string; meta: SessionMeta; entryCount: number; mtimeMs: number }>> {
     let files: string[];
     try {
@@ -138,15 +171,27 @@ export class SessionStore {
       if (!f.endsWith(".jsonl")) continue;
       const sessionId = f.slice(0, -".jsonl".length);
       const path = this.pathFor(sessionId);
-      const loaded = await this.load(sessionId).catch(() => null);
-      if (!loaded) continue;
+      const raw = await readFile(path, "utf-8").catch(() => null);
+      if (raw === null) continue;
+      const nl = raw.indexOf("\n");
+      const headerLine = (nl === -1 ? raw : raw.slice(0, nl)).trim();
+      let meta: SessionMeta | undefined;
+      try {
+        const parsed = this.#migrate(JSON.parse(headerLine) as Record<string, unknown>);
+        if (parsed.kind === "header") meta = parsed.meta as SessionMeta;
+      } catch {
+        // Unparseable header — skip this session file.
+      }
+      if (!meta) continue;
+      let entryCount = 0;
+      for (const line of raw.split("\n")) {
+        // Count only lines that look like JSON records — torn/garbage lines
+        // from a crash mid-write don't inflate the count.
+        if (line.trimStart().startsWith("{")) entryCount++;
+      }
+      entryCount -= 1; // subtract the header line
       const st = await stat(path).catch(() => ({ mtimeMs: 0 }));
-      out.push({
-        sessionId,
-        meta: loaded.meta,
-        entryCount: loaded.entries.length,
-        mtimeMs: st.mtimeMs,
-      });
+      out.push({ sessionId, meta, entryCount, mtimeMs: st.mtimeMs });
     }
     return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   }
@@ -165,24 +210,12 @@ export class SessionStore {
   }
 }
 
-/** Scrub common secret shapes from arbitrary data before persistence. */
-export function scrubSecrets(data: unknown): unknown {
-  if (typeof data === "string") {
-    return data
-      .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
-      .replace(/Bearer\s+[^\s"']+/gi, "Bearer [redacted]");
+/** Structural equality via JSON; unstringifiable data compares as unequal. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
   }
-  if (Array.isArray(data)) return data.map(scrubSecrets);
-  if (data && typeof data === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
-      if (/^(key|token|secret|password|authorization|api[_-]?key)$/i.test(k)) {
-        out[k] = "[redacted]";
-      } else {
-        out[k] = scrubSecrets(v);
-      }
-    }
-    return out;
-  }
-  return data;
 }
+

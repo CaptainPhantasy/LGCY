@@ -146,13 +146,53 @@ describe("AnthropicStreamNormalizer", () => {
     expect(events.filter((e) => e.type === "error")).toHaveLength(1);
   });
 
-  test("ping and unknown events are tolerated silently", () => {
+  test("ping is dropped; unknown events emit a structured warning", () => {
     const events = feed(new AnthropicStreamNormalizer(opts), [
       { event: "ping", data: '{"type":"ping"}' },
       { event: "message_start", data: '{"type":"message_start","message":{"id":"m4","model":"claude-x"}}' },
       { event: "wat", data: '{"type":"wat"}' },
       { event: "message_stop", data: '{"type":"message_stop"}' },
     ]);
-    expect(events.map((e) => e.type)).toEqual(["response-start", "response-complete"]);
+    expect(events.map((e) => e.type)).toEqual(["response-start", "warning", "response-complete"]);
+    const warning = events[1]!;
+    expect((warning.data as { kind: string }).kind).toBe("unknown-event");
+    expect((warning.data as { eventType: string }).eventType).toBe("wat");
+  });
+});
+
+describe("BaseNormalizer (#5, #6, #26, #48)", () => {
+  test("non-canonical error envelope terminates with provider error (#5)", () => {
+    const n = new AnthropicStreamNormalizer({ ...opts, now: () => 0 });
+    const ev = n.handle({ event: "request_error", data: '{"type":"request_error","error":{"message":"boom"}}' });
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.type).toBe("error");
+    expect((ev[0]!.data as Record<string, unknown>).message).toContain("boom");
+  });
+  test("error-like type with payload.error terminates (#5)", () => {
+    const n = new AnthropicStreamNormalizer({ ...opts, now: () => 0 });
+    const ev = n.handle({ event: "weird", data: '{"type":"weird","error":{"message":"x"}}' });
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.type).toBe("error");
+    expect((ev[0]!.data as Record<string, unknown>).source).toBe("provider");
+  });
+  test("malformed JSON produces exactly one terminal (#6)", () => {
+    const n = new OpenAiStreamNormalizer({ ...opts, now: () => 0 });
+    expect(n.handle({ event: "x", data: "not json" }).map((e) => e.type)).toEqual(["error"]);
+    expect(n.terminated).toBe(true);
+    expect(n.handle({ event: "x", data: "still not json" })).toEqual([]);
+  });
+  test("elapsedMs clamped at zero with non-monotonic clock (#26)", () => {
+    let clock = 100;
+    const n = new OpenAiStreamNormalizer({ ...opts, now: () => clock });
+    clock = 50; // went backwards
+    const events = n.handle({ event: "x", data: '{"id":"c1","model":"m","choices":[{"delta":{"content":"a"}}]}' });
+    // The response-start also fires on first handle; filter for text-delta
+    const text = events.find((e) => e.type === "text-delta")!;
+    expect(text.elapsedMs).toBe(0);
+  });
+  test("close() is idempotent — second call returns [] (#48)", () => {
+    const n = new OpenAiStreamNormalizer({ ...opts, now: () => 0 });
+    expect(n.close()).toHaveLength(1); // terminal event
+    expect(n.close()).toEqual([]); // already terminated
   });
 });

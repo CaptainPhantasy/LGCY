@@ -7,6 +7,17 @@
  * Modifier encoding (xterm): the code after the semicolon is a value 2-8, NOT
  * a bitmask — 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl,
  * 8=Shift+Alt+Ctrl.
+ *
+ * Documented protocol limitations:
+ *  - Tab (0x09) and Ctrl+I are the SAME byte on the wire; the terminal cannot
+ *    distinguish them. This decoder always reports 0x09 as Tab. Pasted text
+ *    containing control bytes is likewise indistinguishable from typed keys
+ *    unless the terminal negotiates bracketed-paste mode (CSI 200~/201~),
+ *    which is out of scope for v1.
+ *  - Partial UTF-8 sequences straddling feed() calls are held by the
+ *    streaming TextDecoder and only surface once complete. flush() finalizes
+ *    the decoder: a truncated tail becomes U+FFFD (replacement char) rather
+ *    than being silently dropped or mis-decoded.
  */
 
 export interface Key {
@@ -57,7 +68,11 @@ export class KeyDecoder {
     return this.#drain();
   }
 
-  /** Flush the UTF-8 decoder (call when stdin closes). */
+  /**
+   * Flush the UTF-8 decoder (call when stdin closes). Any incomplete trailing
+   * byte sequence is rejected explicitly: the final decode() surfaces it as
+   * U+FFFD, which is then emitted as a literal key like any other code point.
+   */
   flush(): Key[] {
     this.#buf += this.#decoder.decode();
     const keys = this.#drain();

@@ -1,7 +1,15 @@
 /**
  * Screen buffer — an in-memory grid of styled cells. The renderer diffs two
- * buffers to produce minimal ANSI updates. Every cell is monospace width-1
- * (wide-grapheme handling is a documented v1 limitation).
+ * buffers to produce minimal ANSI updates. Every cell is monospace width-1.
+ *
+ * Cell/wide-char policy (documented v1 limitation):
+ *  - A cell holds a single BMP code point. Graphemes outside the BMP
+ *    (emoji, many CJK extension chars — UTF-16 surrogate pairs) do not fit
+ *    a width-1 cell and are rendered as "?" instead of a broken
+ *    half-surrogate.
+ *  - setCell with a multi-character string keeps only the FIRST code point.
+ *  - Cells are immutable by convention: every write REPLACES a cell object,
+ *    never mutates one. This lets clear()/clone() share cell objects safely.
  */
 
 import { type Style, styleEqual } from "./ansi";
@@ -29,9 +37,14 @@ export class ScreenBuffer {
     this.rows = Array.from({ length: height }, () => Array.from({ length: width }, () => cell(" ")));
   }
 
+  /**
+   * Reset every cell. A single shared fill object is used — safe because
+   * cells are immutable by convention (all writes replace, never mutate).
+   */
   clear(char = " ", style?: Style): void {
+    const fill = cell(char, style);
     for (const row of this.rows) {
-      for (let x = 0; x < row.length; x++) row[x] = cell(char, style);
+      for (let x = 0; x < row.length; x++) row[x] = fill;
     }
   }
 
@@ -39,9 +52,13 @@ export class ScreenBuffer {
     return this.rows[y]![x]!;
   }
 
+  /**
+   * Write one cell. Multi-character input keeps only the first code point;
+   * non-BMP code points (surrogate pairs) render as "?" (see module docs).
+   */
   setCell(x: number, y: number, char: string, style?: Style): void {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return;
-    this.rows[y]![x] = cell(char.length === 0 ? " " : char[0]!, style);
+    this.rows[y]![x] = cell(char, style);
   }
 
   /**
@@ -78,19 +95,28 @@ export class ScreenBuffer {
     }
   }
 
+  /**
+   * Copy the grid. Cell objects are shared by reference (they are immutable
+   * by convention), so cloning allocates only the row arrays — no per-cell
+   * object allocation on the streaming hot path.
+   */
   clone(): ScreenBuffer {
     const copy = new ScreenBuffer(this.width, this.height);
     for (let y = 0; y < this.height; y++) {
-      for (let x = 0; x < this.width; x++) {
-        copy.rows[y]![x] = { ...this.rows[y]![x]!, style: this.rows[y]![x]!.style };
-      }
+      const src = this.rows[y]!;
+      const dst = copy.rows[y]!;
+      for (let x = 0; x < this.width; x++) dst[x] = src[x]!;
     }
     return copy;
   }
 }
 
 function cell(char: string, style?: Style): Cell {
-  return { char: char.length === 0 ? " " : char[0]!, style };
+  if (char.length === 0) return { char: " ", style };
+  const first = String.fromCodePoint(char.codePointAt(0)!);
+  // Wide graphemes (outside the BMP → surrogate pairs) don't fit a width-1
+  // cell; render a placeholder instead of a broken half-surrogate.
+  return { char: first.length > 1 ? "?" : first, style };
 }
 
 export function cellEqual(a: Cell, b: Cell): boolean {

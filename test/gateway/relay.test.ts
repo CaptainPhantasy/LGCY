@@ -257,3 +257,79 @@ describe("GatewayRelay — error passthrough", () => {
     expect(errorData(events[0]!).source).toBe("gateway-transport");
   });
 });
+
+describe("GatewayRelay — item #3 JSON structured redaction", () => {
+  test("JSON error body with nested secret values is redacted structurally", async () => {
+    const { fetch } = mockFetch({
+      status: 429,
+      contentType: "application/json",
+      chunks: ['{"error":{"message":"rate limited","metadata":{"key":"sk-abcd1234567890","authorization":"Bearer live"}}}'],
+    });
+    const relay = new GatewayRelay(new ProviderRegistry([openai]));
+    const events = await collect(
+      relay.stream(req(), { secretResolver: alwaysSecret, fetchImpl: fetch, requestId: "r1", now: () => 0 }),
+    );
+    const d = events[0]!.data as Record<string, unknown>;
+    expect(d.source).toBe("provider");
+    const body = d.body as string;
+    // Structured redactor replaces the whole value with "[redacted]"
+    expect(body).not.toContain("sk-abcd1234567890");
+    expect(body).not.toContain("Bearer live");
+    expect(body).toContain("[redacted]");
+    expect(body).toContain("rate limited"); // message preserved
+  });
+});
+
+describe("GatewayRelay — item #46 pre-dispatch abort", () => {
+  test("already-aborted signal yields cancelled without calling fetch", async () => {
+    let fetchCalled = false;
+    const fetch = (async () => {
+      fetchCalled = true;
+      return makeResponse(sseBody([]));
+    }) as unknown as FetchImpl;
+    const ac = new AbortController();
+    ac.abort();
+    const relay = new GatewayRelay(new ProviderRegistry([openai]));
+    const events = await collect(
+      relay.stream(req(), { secretResolver: alwaysSecret, fetchImpl: fetch, signal: ac.signal, now: () => 0 }),
+    );
+    expect(events).toHaveLength(1);
+    expect(errorData(events[0]!).source).toBe("cancelled");
+    expect(fetchCalled).toBe(false);
+  });
+});
+
+describe("GatewayRelay — item #4 abort between stream yields", () => {
+  test("abort mid-stream triggers cancelled before processing subsequent events", async () => {
+    const enc = new TextEncoder();
+    const ac = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(enc.encode('data: {"id":"c1","model":"gpt","choices":[{"delta":{"content":"a"}}]}\n\n'));
+        // Close the stream after a short delay; the abort fires concurrently
+        // so the generator sees isAborted() before processing the done event.
+        setTimeout(() => {
+          ac.abort();
+          controller.close();
+        }, 5);
+      },
+      pull() {
+        // Block until the timeout above closes the stream.
+        return new Promise(() => {});
+      },
+    });
+    const fetch = (async () => makeResponse(body)) as unknown as FetchImpl;
+    const relay = new GatewayRelay(new ProviderRegistry([openai]));
+    const events = await collect(
+      relay.stream(req(), { secretResolver: alwaysSecret, fetchImpl: fetch, signal: ac.signal, requestId: "r4", now: () => 0 }),
+    );
+    const types = events.map((e) => e.type);
+    expect(types[0]).toBe("response-start");
+    expect(types[1]).toBe("text-delta");
+    // The cancelled terminal replaces any remaining events.
+    expect(types[types.length - 1]).toBe("error");
+    expect(errorData(events[events.length - 1]!).source).toBe("cancelled");
+    // Only one text-delta was emitted (chunk "a").
+    expect(types.filter((t) => t === "text-delta")).toHaveLength(1);
+  });
+});

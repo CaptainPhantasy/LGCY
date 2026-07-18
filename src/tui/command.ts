@@ -66,15 +66,28 @@ export class CommandRegistry<T = unknown> {
   }
 }
 
-/** Split on whitespace, honoring double-quoted segments. */
+/**
+ * Split on whitespace, honoring double-quoted segments. An unterminated
+ * quote is handled explicitly: the opening quote is kept as a literal
+ * character in the token, so user typos like /model "gpt-4o surface
+ * visibly (the model name shows the stray quote) instead of being silently
+ * reinterpreted. No escape sequences are supported.
+ */
 export function tokenize(input: string): string[] {
   const out: string[] = [];
   let cur = "";
   let inQuotes = false;
+  let quotePos = -1; // offset within cur where the current quote opened
   for (let i = 0; i < input.length; i++) {
     const ch = input[i]!;
     if (ch === '"') {
-      inQuotes = !inQuotes;
+      if (inQuotes) {
+        inQuotes = false;
+        quotePos = -1;
+      } else {
+        inQuotes = true;
+        quotePos = cur.length;
+      }
       continue;
     }
     if (ch === " " && !inQuotes) {
@@ -85,6 +98,10 @@ export function tokenize(input: string): string[] {
       continue;
     }
     cur += ch;
+  }
+  if (inQuotes && quotePos >= 0) {
+    // Unterminated quote — restore it as a literal character.
+    cur = `${cur.slice(0, quotePos)}"${cur.slice(quotePos)}`;
   }
   if (cur.length > 0) out.push(cur);
   return out;

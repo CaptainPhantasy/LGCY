@@ -66,6 +66,22 @@ describe("built-in commands", () => {
     const fresh = await a.settings.load();
     expect(fresh.defaultModel).toBe("gpt-4o");
   });
+  test("/provider updates settings (#39)", async () => {
+    const a = app();
+    const out: string[] = [];
+    const state = { settings: a.settings, registry: a.registry, tasks: a.tasks, output: [] };
+    await a.commands.execute("/provider anthropic", { state, print: (t) => out.push(t) });
+    expect(out[0]).toContain("anthropic");
+    const fresh = await a.settings.load();
+    expect(fresh.defaultProviderId).toBe("anthropic");
+  });
+  test("/provider rejects unknown id (#39)", async () => {
+    const a = app();
+    const out: string[] = [];
+    const state = { settings: a.settings, registry: a.registry, tasks: a.tasks, output: [] };
+    await a.commands.execute("/provider nope", { state, print: (t) => out.push(t) });
+    expect(out[0]).toContain("unknown provider");
+  });
 
   test("/help lists commands", async () => {
     const a = app();

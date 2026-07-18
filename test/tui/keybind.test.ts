@@ -97,3 +97,13 @@ describe("KeyDecoder", () => {
     expect(keys.map((k) => k.key)).toEqual(["a", "b"]);
   });
 });
+
+describe("KeyDecoder — item #33 truncated UTF-8 tail on flush", () => {
+  test("incomplete multi-byte sequence surfaces as U+FFFD on flush", () => {
+    const k = new KeyDecoder();
+    k.feed(new Uint8Array([0xe2, 0x82])); // first 2 bytes of € (U+20AC)
+    const keys = k.flush();
+    expect(keys).toHaveLength(1);
+    expect(keys[0]!.key).toBe("\uFFFD");
+  });
+});
