@@ -22,8 +22,23 @@ const anthropic: ProviderConfiguration = {
   apiKeyReference: { kind: "env", variable: "ANTHROPIC_API_KEY" },
   enabled: true,
 };
+const opencode: ProviderConfiguration = {
+  id: "opencode-zen",
+  displayName: "OpenCode Zen",
+  kind: "opencode-zen",
+  dialect: "openai",
+  baseUrl: "https://opencode.ai/zen/v1",
+  apiKeyReference: { kind: "env", variable: "OPENCODE_KEY" },
+  proxyAuth: {
+    header: "Proxy-Authorization",
+    reference: { kind: "env", variable: "OPENCODE_PROXY_AUTH" },
+  },
+  enabled: true,
+};
 
 const alwaysSecret: SecretResolver = async () => "sk-test";
+const proxySecretResolver: SecretResolver = async (ref) =>
+  ref.kind === "env" && ref.variable === "OPENCODE_PROXY_AUTH" ? "px-proxy" : "sk-test";
 
 function req(partial: Partial<UnifiedChatRequest> = {}): UnifiedChatRequest {
   return { providerId: "openai", model: "m", messages: [{ role: "user", content: "hi" }], stream: true, ...partial };
@@ -111,6 +126,19 @@ describe("GatewayRelay — happy paths", () => {
     expect(body.stream_options).toEqual({ include_usage: true });
     expect(calls[0]!.headers.authorization).toBe("Bearer sk-test");
     expect(calls[0]!.url.pathname).toBe("/v1/chat/completions");
+  });
+  test("OpenCode sends proxy auth header from the proxy auth source", async () => {
+    const { fetch, calls } = mockFetch({ chunks: [] });
+    const relay = new GatewayRelay(new ProviderRegistry([opencode]));
+    await collect(
+      relay.stream(req({ providerId: "opencode-zen" }), {
+        secretResolver: proxySecretResolver,
+        fetchImpl: fetch,
+        requestId: "r2",
+        now: () => 0,
+      }),
+    );
+    expect(calls[0]!.headers["proxy-authorization"]).toBe("Bearer px-proxy");
   });
 
   test("Anthropic stream pipes through with system extraction + x-api-key", async () => {

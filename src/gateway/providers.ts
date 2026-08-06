@@ -22,6 +22,10 @@ export const BUILT_IN_PROVIDERS: ProviderConfiguration[] = [
     dialect: "openai",
     baseUrl: "https://opencode.ai/zen/v1",
     apiKeyReference: { kind: "auth-broker", provider: "opencode-zen" },
+    proxyAuth: {
+      header: "Proxy-Authorization",
+      reference: { kind: "env", variable: "OPENCODE_PROXY_AUTH" },
+    },
     enabled: true,
   },
   {
@@ -31,6 +35,10 @@ export const BUILT_IN_PROVIDERS: ProviderConfiguration[] = [
     dialect: "openai",
     baseUrl: "https://opencode.ai/zen/go/v1",
     apiKeyReference: { kind: "auth-broker", provider: "opencode-go" },
+    proxyAuth: {
+      header: "Proxy-Authorization",
+      reference: { kind: "env", variable: "OPENCODE_PROXY_AUTH" },
+    },
     enabled: true,
   },
   {
@@ -77,13 +85,22 @@ export function completionUrl(config: ProviderConfiguration): URL {
  * Authentication headers for a resolved secret. The secret value flows
  * through here at request time only; it is never stored on the config.
  */
-export function authHeaders(config: ProviderConfiguration, secret: string): Record<string, string> {
+export function authHeaders(
+  config: ProviderConfiguration,
+  secret: string,
+  proxySecret?: string,
+): Record<string, string> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(config.dialect === "anthropic"
       ? { "x-api-key": secret, "anthropic-version": ANTHROPIC_VERSION }
       : { authorization: `Bearer ${secret}` }),
   };
+  if (config.proxyAuth && proxySecret) {
+    const prefix = config.proxyAuth.prefix ?? "Bearer";
+    const value = prefix ? `${prefix} ${proxySecret}` : proxySecret;
+    headers[config.proxyAuth.header.toLowerCase()] = value;
+  }
   for (const [k, v] of Object.entries(config.defaultHeaders ?? {})) {
     headers[k.toLowerCase()] = v;
   }

@@ -5,3 +5,12 @@ dist/
 
 # Floyd local memory
 .floyd/
+
+# Local agent/session state and hand-rolled backups. Not source; version
+# control replaces the backups.
+.DS_Store
+*.backup
+*.backup-*
+*.backup.*
+.casper/
+.planning/

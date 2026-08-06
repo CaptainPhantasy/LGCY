@@ -22,6 +22,13 @@ export type CredentialReference =
   | { kind: "auth-broker"; provider: string }
   | { kind: "none" };
 
+export interface ProxyCredentialReference {
+  header: string;
+  reference: CredentialReference;
+  /** Prefix inserted before the secret value (default: `Bearer`). */
+  prefix?: string;
+}
+
 export type SecretResolver = (ref: CredentialReference) => Promise<string>;
 
 export interface ProviderConfiguration {
@@ -31,6 +38,7 @@ export interface ProviderConfiguration {
   dialect: ProviderDialect;
   baseUrl: string;
   apiKeyReference: CredentialReference;
+  proxyAuth?: ProxyCredentialReference;
   enabled: boolean;
   defaultHeaders?: Record<string, string>;
   modelCatalog?: string[];

@@ -154,8 +154,12 @@ export class GatewayRelay {
 
     // Resolve the secret at request time; never persisted.
     let secret: string;
+    let proxySecret: string | undefined;
     try {
       secret = await opts.secretResolver(config.apiKeyReference);
+      if (config.proxyAuth) {
+        proxySecret = await opts.secretResolver(config.proxyAuth.reference);
+      }
     } catch (e) {
       for (const ev of fail({
         source: "local-config",
@@ -167,7 +171,7 @@ export class GatewayRelay {
     }
 
     const url = completionUrl(config);
-    const headers = authHeaders(config, secret);
+    const headers = authHeaders(config, secret, proxySecret);
 
     // Combine caller abort with the per-provider timeout into one signal.
     const userAborted = () => opts.signal?.aborted === true;

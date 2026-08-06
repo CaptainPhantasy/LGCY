@@ -8,7 +8,8 @@
     "start": "bun run src/app/main.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "build": "bun build --compile --outfile dist/lgcy src/app/main.ts"
+    "build": "bun build --compile --outfile dist/lgcy src/app/main.ts",
+    "install:local": "bun run scripts/install-local.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14"

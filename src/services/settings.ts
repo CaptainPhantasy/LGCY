@@ -45,6 +45,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const KNOWN_KEYS = new Set(["defaultProviderId", "defaultModel", "theme", "models", "preferences"]);
 
+/**
+ * Machine-wide defaults, layered under the user's own config so a fresh
+ * account on this host inherits working settings. Override the location
+ * with LGCY_SHARED_DIR. User settings always win; writes stay per-user.
+ */
+const SHARED_DIR = process.env.LGCY_SHARED_DIR ?? "/usr/local/share/lgcy";
+
+async function loadSharedDefaults(): Promise<Partial<AppSettings>> {
+  try {
+    const raw = await readFile(join(SHARED_DIR, "config.json"), "utf-8");
+    return sanitizeSettings(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
 export interface SettingsStoreOptions {
   path?: string;
   /** Called when credential-shaped values are saved into preferences. */
@@ -67,11 +83,12 @@ export class SettingsStore {
 
   async load(): Promise<AppSettings> {
     if (this.#cache) return this.#cache;
+    const shared = await loadSharedDefaults();
     try {
       const raw = await readFile(this.#path, "utf-8");
-      this.#cache = { ...DEFAULT_SETTINGS, ...sanitizeSettings(JSON.parse(raw)) };
+      this.#cache = { ...DEFAULT_SETTINGS, ...shared, ...sanitizeSettings(JSON.parse(raw)) };
     } catch {
-      this.#cache = { ...DEFAULT_SETTINGS };
+      this.#cache = { ...DEFAULT_SETTINGS, ...shared };
     }
     return this.#cache;
   }

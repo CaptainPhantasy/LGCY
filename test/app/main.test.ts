@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { banner, createApp, sendAndStream, type AppContext } from "../../src/app/main";
+import { banner, createApp, main, sendAndStream, VERSION, type AppContext } from "../../src/app/main";
 import type { UnifiedStreamEvent } from "../../src/core/contracts";
 
 let dir: string;
@@ -45,6 +45,51 @@ describe("createApp", () => {
     for (const id of ["help", "providers", "model", "tasks", "clear", "exit"]) {
       expect(a.commands.has(id)).toBe(true);
     }
+  });
+});
+
+describe("command entrypoint", () => {
+  function commandOnlyRun(args: string[]) {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let applicationCreates = 0;
+    const result = main({
+      args,
+      createApplication: () => {
+        applicationCreates++;
+        throw new Error("command-only path created the application");
+      },
+      writeStdout: (text) => stdout.push(text),
+      writeStderr: (text) => stderr.push(text),
+    });
+    return { result, stdout, stderr, applicationCreates: () => applicationCreates };
+  }
+
+  test.each(["--help", "-h"])("%s short-circuits before application work", async (flag) => {
+    const run = commandOnlyRun([flag]);
+    expect(await run.result).toBe(0);
+    expect(run.applicationCreates()).toBe(0);
+    expect(run.stdout.join("")).toContain("Usage: lgcy");
+    expect(run.stdout.join("")).not.toContain("broker:");
+    expect(run.stdout.join("")).not.toContain("no tty");
+    expect(run.stderr).toEqual([]);
+  });
+
+  test.each(["--version", "-V"])("%s prints one stable line without application work", async (flag) => {
+    const run = commandOnlyRun([flag]);
+    expect(await run.result).toBe(0);
+    expect(run.applicationCreates()).toBe(0);
+    expect(run.stdout).toEqual([`lgcy ${VERSION}\n`]);
+    expect(run.stderr).toEqual([]);
+  });
+
+  test("an unknown option returns EX_USAGE without application work", async () => {
+    const run = commandOnlyRun(["--bogus"]);
+    expect(await run.result).toBe(64);
+    expect(run.applicationCreates()).toBe(0);
+    expect(run.stdout).toEqual([]);
+    expect(run.stderr.join("")).toContain("unknown option: --bogus");
+    expect(run.stderr.join("")).toContain("lgcy --help");
   });
 });
 

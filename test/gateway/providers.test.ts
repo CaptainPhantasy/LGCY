@@ -26,6 +26,19 @@ const anthropic: ProviderConfiguration = {
   apiKeyReference: { kind: "env", variable: "ANTHROPIC_API_KEY" },
   enabled: true,
 };
+const withProxy: ProviderConfiguration = {
+  id: "opencode-zen",
+  displayName: "OpenCode Zen",
+  kind: "opencode-zen",
+  dialect: "openai",
+  baseUrl: "https://opencode.ai/zen/v1",
+  apiKeyReference: { kind: "env", variable: "OPENCODE_KEY" },
+  proxyAuth: {
+    header: "Proxy-Authorization",
+    reference: { kind: "env", variable: "OPENCODE_PROXY_AUTH" },
+  },
+  enabled: true,
+};
 
 describe("completionUrl", () => {
   test("openai dialect appends /chat/completions", () => {
@@ -66,6 +79,18 @@ describe("authHeaders", () => {
       "sk-1",
     );
     expect(h["x-org"]).toBe("org1");
+  });
+  test("proxyAuth adds Proxy-Authorization header", () => {
+    const h = authHeaders(withProxy, "sk-1", "px-1");
+    expect(h["proxy-authorization"]).toBe("Bearer px-1");
+  });
+  test("proxyAuth can disable scheme when prefix is empty", () => {
+    const h = authHeaders(
+      { ...withProxy, proxyAuth: { ...withProxy.proxyAuth!, prefix: "" } },
+      "sk-1",
+      "basic px-2",
+    );
+    expect(h["proxy-authorization"]).toBe("basic px-2");
   });
 });
 

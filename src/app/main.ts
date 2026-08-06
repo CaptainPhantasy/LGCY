@@ -23,9 +23,15 @@ import { ScreenBuffer } from "../tui/buffer";
 import { HIDE_CURSOR, SHOW_CURSOR, CLEAR_SCREEN, Color } from "../tui/ansi";
 import type { SecretResolver, UnifiedChatRequest, UnifiedMessage } from "../core/contracts";
 
-const VERSION = "0.1.0";
+export const VERSION = "0.1.0";
 const ALT_ENTER = "\x1b[?1049h";
 const ALT_LEAVE = "\x1b[?1049l";
+
+const USAGE = `Usage: lgcy [options]
+
+Options:
+  -h, --help       Show this help
+  -V, --version    Show the version`;
 
 export interface AppContext {
   version: string;
@@ -182,20 +188,50 @@ export function banner(ctx: AppContext, brokerHealthy: boolean | null, project?:
 
 /* --------------------------- Interactive loop ----------------------------- */
 
-export async function main(): Promise<void> {
-  const ctx = createApp();
+export interface MainOptions {
+  args?: string[];
+  createApplication?: typeof createApp;
+  writeStdout?: (text: string) => void;
+  writeStderr?: (text: string) => void;
+}
+
+/**
+ * Run the command entrypoint. Command-only options are handled before the
+ * application is created, so help/version/error paths cannot touch projects,
+ * sessions, terminals, or the auth broker.
+ */
+export async function main(options: MainOptions = {}): Promise<number> {
+  const args = options.args ?? Bun.argv.slice(2);
+  const writeStdout = options.writeStdout ?? ((text: string) => process.stdout.write(text));
+  const writeStderr = options.writeStderr ?? ((text: string) => process.stderr.write(text));
+
+  if (args.length > 0) {
+    if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+      writeStdout(`${USAGE}\n`);
+      return 0;
+    }
+    if (args.length === 1 && (args[0] === "--version" || args[0] === "-V")) {
+      writeStdout(`lgcy ${VERSION}\n`);
+      return 0;
+    }
+    writeStderr(`lgcy: unknown option: ${args[0]}\nTry 'lgcy --help' for usage.\n`);
+    return 64;
+  }
+
+  const ctx = (options.createApplication ?? createApp)();
   const projectInfo = await ctx.project.discover(ctx.cwd).catch(() => undefined);
   const brokerHealthy = await ctx.broker.health().catch(() => null);
 
   if (!process.stdin.isTTY) {
     process.stdout.write(banner(ctx, brokerHealthy, projectInfo) + "\n");
     process.stdout.write("(no tty — interactive shell unavailable)\n");
-    return;
+    return 0;
   }
 
   await runInteractive(ctx, brokerHealthy, projectInfo).catch((e) => {
     process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
   });
+  return 0;
 }
 
 async function runInteractive(
@@ -402,5 +438,7 @@ function cursorToEnd(rows: number): string {
 
 // Entry point guard.
 if (import.meta.main) {
-  main();
+  void main().then((exitCode) => {
+    process.exitCode = exitCode;
+  });
 }
