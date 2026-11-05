@@ -77,7 +77,10 @@ export class SettingsStore {
   readonly #path: string;
   readonly #sharedDir: string;
   readonly #onWarn: (message: string) => void;
+  /** User-layer settings as read from this.#path — the only layer persisted. */
   #cache: AppSettings | undefined;
+  /** Machine-wide defaults, loaded once; layered only in effective views. */
+  #shared: Partial<AppSettings> | undefined;
 
   constructor(opts: SettingsStoreOptions = {}) {
     this.#path = opts.path ?? join(homedir(), ".lgcy", "config.json");
@@ -90,15 +93,25 @@ export class SettingsStore {
   }
 
   async load(): Promise<AppSettings> {
-    if (this.#cache) return this.#cache;
-    const shared = await loadSharedDefaults(this.#sharedDir);
+    if (this.#cache) return this.#effective();
+    this.#shared = await loadSharedDefaults(this.#sharedDir);
     try {
       const raw = await readFile(this.#path, "utf-8");
-      this.#cache = { ...DEFAULT_SETTINGS, ...shared, ...sanitizeSettings(JSON.parse(raw)) };
+      this.#cache = sanitizeSettings(JSON.parse(raw));
     } catch {
-      this.#cache = { ...DEFAULT_SETTINGS, ...shared };
+      this.#cache = {};
     }
-    return this.#cache;
+    return this.#effective();
+  }
+
+  /**
+   * Effective settings: defaults + machine-wide shared defaults layered under
+   * the user's own settings. The shared layer is never persisted — update() and
+   * save() operate on the user layer only, so writes stay per-user and a later
+   * change to the shared file keeps reaching this user.
+   */
+  #effective(): AppSettings {
+    return { ...DEFAULT_SETTINGS, ...this.#shared, ...this.#cache };
   }
 
   async save(settings: AppSettings): Promise<void> {
@@ -113,7 +126,9 @@ export class SettingsStore {
    * `undefined` values delete the corresponding key (see module docs).
    */
   async update(partial: SettingsPatch): Promise<AppSettings> {
-    const current = await this.load();
+    if (!this.#cache) await this.load(); // ensures #shared is populated too
+    // Layer onto the user-only settings so inherited defaults are not materialised.
+    const current = this.#cache!;
     const merged: AppSettings = { ...current };
     for (const [k, v] of Object.entries(partial)) {
       if (k === "models" || k === "preferences") continue; // deep-merged below
@@ -137,7 +152,7 @@ export class SettingsStore {
       merged.preferences = preferences;
     }
     await this.save(merged);
-    return merged;
+    return await this.load();
   }
 
   #warnOnCredentialPreferences(settings: AppSettings): void {
