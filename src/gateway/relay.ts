@@ -158,7 +158,12 @@ export class GatewayRelay {
     try {
       secret = await opts.secretResolver(config.apiKeyReference);
       if (config.proxyAuth) {
-        proxySecret = await opts.secretResolver(config.proxyAuth.reference);
+        // Best-effort: a missing proxy credential only omits the header.
+        try {
+          proxySecret = await opts.secretResolver(config.proxyAuth.reference);
+        } catch {
+          proxySecret = undefined;
+        }
       }
     } catch (e) {
       for (const ev of fail({
