@@ -7,9 +7,12 @@
  * stripped and invalid values dropped, so a malformed or older-version file
  * can never inject unexpected state downstream.
  *
- * Deletion semantics (update): passing an explicit `undefined` value DELETES
- * the key — at the top level ({ defaultModel: undefined }) and inside the
- * models / preferences maps ({ models: { openai: undefined } }).
+ * Deletion semantics (update): passing an explicit `undefined` value deletes
+ * the key from the per-user layer — at the top level ({ defaultModel: undefined })
+ * and inside the models / preferences maps ({ models: { openai: undefined } }).
+ * This applies to the user's own config only: keys inherited from the
+ * machine-wide shared defaults are NOT removed, and the shared value keeps
+ * appearing in the effective settings returned by load()/update().
  *
  * Preferences are NOT a secret store: saving credential-shaped values under
  * known credential key names triggers an onWarn callback (default: stderr).
@@ -123,7 +126,9 @@ export class SettingsStore {
 
   /**
    * Layer a partial update onto the current settings and persist. Explicit
-   * `undefined` values delete the corresponding key (see module docs).
+   * `undefined` values delete the corresponding key from the per-user layer
+   * only (see module docs): keys inherited from the shared defaults reappear
+   * in the effective settings returned by this method.
    */
   async update(partial: SettingsPatch): Promise<AppSettings> {
     if (!this.#cache) await this.load(); // ensures #shared is populated too
