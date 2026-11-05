@@ -52,9 +52,9 @@ const KNOWN_KEYS = new Set(["defaultProviderId", "defaultModel", "theme", "model
  */
 const SHARED_DIR = process.env.LGCY_SHARED_DIR ?? "/usr/local/share/lgcy";
 
-async function loadSharedDefaults(): Promise<Partial<AppSettings>> {
+async function loadSharedDefaults(sharedDir: string): Promise<Partial<AppSettings>> {
   try {
-    const raw = await readFile(join(SHARED_DIR, "config.json"), "utf-8");
+    const raw = await readFile(join(sharedDir, "config.json"), "utf-8");
     return sanitizeSettings(JSON.parse(raw));
   } catch {
     return {};
@@ -63,17 +63,25 @@ async function loadSharedDefaults(): Promise<Partial<AppSettings>> {
 
 export interface SettingsStoreOptions {
   path?: string;
+  /**
+   * Directory holding machine-wide defaults (config.json). Defaults to
+   * LGCY_SHARED_DIR or /usr/local/share/lgcy; pass a non-existent directory
+   * to isolate a store from host state.
+   */
+  sharedDir?: string;
   /** Called when credential-shaped values are saved into preferences. */
   onWarn?: (message: string) => void;
 }
 
 export class SettingsStore {
   readonly #path: string;
+  readonly #sharedDir: string;
   readonly #onWarn: (message: string) => void;
   #cache: AppSettings | undefined;
 
   constructor(opts: SettingsStoreOptions = {}) {
     this.#path = opts.path ?? join(homedir(), ".lgcy", "config.json");
+    this.#sharedDir = opts.sharedDir ?? SHARED_DIR;
     this.#onWarn = opts.onWarn ?? ((m) => console.error(`lgcy settings: ${m}`));
   }
 
@@ -83,7 +91,7 @@ export class SettingsStore {
 
   async load(): Promise<AppSettings> {
     if (this.#cache) return this.#cache;
-    const shared = await loadSharedDefaults();
+    const shared = await loadSharedDefaults(this.#sharedDir);
     try {
       const raw = await readFile(this.#path, "utf-8");
       this.#cache = { ...DEFAULT_SETTINGS, ...shared, ...sanitizeSettings(JSON.parse(raw)) };
