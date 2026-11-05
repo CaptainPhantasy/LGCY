@@ -114,7 +114,17 @@ export class SettingsStore {
    * change to the shared file keeps reaching this user.
    */
   #effective(): AppSettings {
-    return { ...DEFAULT_SETTINGS, ...this.#shared, ...this.#cache };
+    // Merge the models/preferences maps key-by-key so user entries in one map
+    // do not hide inherited shared entries in the same map.
+    const models = { ...this.#shared?.models, ...this.#cache?.models };
+    const preferences = { ...this.#shared?.preferences, ...this.#cache?.preferences };
+    return {
+      ...DEFAULT_SETTINGS,
+      ...this.#shared,
+      ...this.#cache,
+      ...(Object.keys(models).length > 0 ? { models } : {}),
+      ...(Object.keys(preferences).length > 0 ? { preferences } : {}),
+    };
   }
 
   async save(settings: AppSettings): Promise<void> {
