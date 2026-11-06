@@ -73,23 +73,24 @@ export class Renderer {
           continue;
         }
         // Start of a changed run — find its extent.
-        const runStart = x;
         let run = "";
         let runStyle: Style | undefined;
+        let segmentStart = x;
         while (x < width && !cellEqual(prevRow[x]!, curRow[x]!)) {
           const c = curRow[x]!;
           if (!styleEqual(runStyle, c.style)) {
             if (run.length > 0) {
-              out += cursorTo(y + 1, runStart + 1) + sgr(runStyle) + run;
+              out += cursorTo(y + 1, segmentStart + 1) + sgr(runStyle) + run;
               run = "";
             }
             runStyle = c.style;
+            segmentStart = x;
           }
           run += c.char;
           x++;
         }
         if (run.length > 0) {
-          out += cursorTo(y + 1, runStart + 1) + sgr(runStyle) + run;
+          out += cursorTo(y + 1, segmentStart + 1) + sgr(runStyle) + run;
         }
       }
     }

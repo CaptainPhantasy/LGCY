@@ -151,3 +151,25 @@ describe("Renderer — item #42 diffPaint ends with RESET", () => {
     expect(r.render(b.clone())).toBe("");
   });
 });
+
+describe("Renderer — Codex P2 style transition within a changed run", () => {
+  test("shorter status label positions following divider at the new column", () => {
+    const r = new Renderer();
+    const blue = { fg: Color.blue };
+    const dim = { dim: true };
+
+    const prev = new ScreenBuffer(16, 1);
+    prev.writeText(0, 0, "anthropic", blue);
+    prev.writeText(9, 0, "---", dim);
+    r.render(prev);
+
+    const next = new ScreenBuffer(16, 1);
+    next.writeText(0, 0, "openai", blue);
+    next.writeText(6, 0, "---", dim);
+    const out = r.render(next);
+
+    expect(out).toContain("\x1b[1;1H");
+    expect(out).toContain("\x1b[1;7H");
+    expect(stripAnsi(out)).toContain("openai---");
+  });
+});
