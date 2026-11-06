@@ -361,3 +361,40 @@ describe("GatewayRelay — item #4 abort between stream yields", () => {
     expect(types.filter((t) => t === "text-delta")).toHaveLength(1);
   });
 });
+
+describe("GatewayRelay — optional proxy credential (regression: PR #6)", () => {
+  const okChunks = [
+    'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n',
+    'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+    "data: [DONE]\n\n",
+  ];
+
+  test("unresolvable proxy credential omits the header and still completes", async () => {
+    const { fetch, calls } = mockFetch({ chunks: okChunks });
+    const resolver: SecretResolver = async (ref) => {
+      if (ref.kind === "env" && ref.variable === "OPENCODE_PROXY_AUTH") throw new Error("OPENCODE_PROXY_AUTH is not set");
+      return "sk-test";
+    };
+    const relay = new GatewayRelay(new ProviderRegistry([opencode]));
+    const events = await collect(relay.stream(req({ providerId: "opencode-zen" }), { secretResolver: resolver, fetchImpl: fetch, now: () => 0 }));
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.headers["authorization"]).toBe("Bearer sk-test");
+    expect(calls[0]!.headers["proxy-authorization"]).toBeUndefined();
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(events.at(-1)!.type).toBe("response-complete");
+  });
+
+  test("unresolvable API key is still fatal before dispatch", async () => {
+    const { fetch, calls } = mockFetch({ chunks: okChunks });
+    const resolver: SecretResolver = async (ref) => {
+      if (ref.kind === "env" && ref.variable === "OPENCODE_KEY") throw new Error("OPENCODE_KEY is not set");
+      return "px-proxy";
+    };
+    const relay = new GatewayRelay(new ProviderRegistry([opencode]));
+    const events = await collect(relay.stream(req({ providerId: "opencode-zen" }), { secretResolver: resolver, fetchImpl: fetch, now: () => 0 }));
+    expect(calls.length).toBe(0);
+    const last = events.at(-1)!;
+    expect(last.type).toBe("error");
+    expect(errorData(last).source).toBe("local-config");
+  });
+});
