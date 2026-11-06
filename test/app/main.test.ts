@@ -162,12 +162,13 @@ describe("banner", () => {
     const a = app();
     const b = banner(a, true);
     expect(b).toContain("lgcy v");
-    expect(b).toContain("broker: online");
+    expect(b).toContain("auth broker: online");
     expect(b).toContain("openai");
   });
-  test("offline broker reflected", () => {
+  test("offline or unknown broker is not shown to the user", () => {
     const a = app();
-    expect(banner(a, false)).toContain("broker: offline");
+    expect(banner(a, false)).not.toContain("broker");
+    expect(banner(a, null)).not.toContain("broker");
   });
 });
 

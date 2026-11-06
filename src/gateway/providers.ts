@@ -61,6 +61,56 @@ export const BUILT_IN_PROVIDERS: ProviderConfiguration[] = [
   },
 ];
 
+/** Id of the user-configured OpenAI-compatible endpoint (e.g. local Ollama). */
+export const CUSTOM_PROVIDER_ID = "custom";
+
+/**
+ * Build the custom OpenAI-compatible provider from the environment.
+ *
+ *   LGCY_BASE_URL   (or OPENAI_BASE_URL)  endpoint base, e.g. http://127.0.0.1:11434/v1
+ *   LGCY_API_KEY    (or OPENAI_API_KEY when OPENAI_BASE_URL is the source) optional key
+ *
+ * Returns undefined when no base URL is configured. A missing key is valid:
+ * local servers such as Ollama accept unauthenticated requests.
+ */
+export function customProviderFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): ProviderConfiguration | undefined {
+  const fromLgcy = env.LGCY_BASE_URL?.trim();
+  const fromOpenAI = env.OPENAI_BASE_URL?.trim();
+  const baseUrl = fromLgcy || fromOpenAI;
+  if (!baseUrl) return undefined;
+  let keyVar: string | undefined;
+  if (env.LGCY_API_KEY) keyVar = "LGCY_API_KEY";
+  else if (!fromLgcy && env.OPENAI_API_KEY) keyVar = "OPENAI_API_KEY";
+  return {
+    id: CUSTOM_PROVIDER_ID,
+    displayName: "Custom OpenAI-compatible",
+    kind: "openai",
+    dialect: "openai",
+    baseUrl: baseUrl.replace(/\/$/, ""),
+    apiKeyReference: keyVar ? { kind: "env", variable: keyVar } : { kind: "none" },
+    enabled: true,
+  };
+}
+
+/** Human-readable credential readiness for /providers. Never reveals values. */
+export function credentialStatus(
+  config: ProviderConfiguration,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (!config.enabled) return "disabled";
+  const ref = config.apiKeyReference;
+  switch (ref.kind) {
+    case "none":
+      return "configured (no key needed)";
+    case "env":
+      return env[ref.variable] ? "configured" : `missing API key (${ref.variable})`;
+    case "auth-broker":
+      return "needs auth broker";
+  }
+}
+
 const COMPLETION_PATHS: Record<ProviderDialect, string> = {
   openai: "/chat/completions",
   anthropic: "/messages",
@@ -93,8 +143,10 @@ export function authHeaders(
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(config.dialect === "anthropic"
-      ? { "x-api-key": secret, "anthropic-version": ANTHROPIC_VERSION }
-      : { authorization: `Bearer ${secret}` }),
+      ? { "anthropic-version": ANTHROPIC_VERSION, ...(secret ? { "x-api-key": secret } : {}) }
+      : secret
+        ? { authorization: `Bearer ${secret}` }
+        : {}),
   };
   if (config.proxyAuth && proxySecret) {
     const prefix = config.proxyAuth.prefix ?? "Bearer";

@@ -83,6 +83,23 @@ export class KeyDecoder {
     return keys;
   }
 
+  /** True when the only buffered input is a lone ESC awaiting disambiguation. */
+  hasPendingEscape(): boolean {
+    return this.#buf === "\x1b";
+  }
+
+  /**
+   * Resolve a lone ESC that has waited past the disambiguation window. Callers
+   * start a short timer (~30 ms) after feed() when hasPendingEscape() is true;
+   * if no further bytes arrived, the ESC is a real Escape keypress. Returns the
+   * Escape key, or an empty list when the buffer moved on.
+   */
+  takePendingEscape(): Key[] {
+    if (this.#buf !== "\x1b") return [];
+    this.#buf = "";
+    return [{ key: "Escape", ctrl: false, alt: false, shift: false }];
+  }
+
   #drain(): Key[] {
     const out: Key[] = [];
     let consumed = 0;
@@ -108,6 +125,13 @@ export class KeyDecoder {
       // ESC + single char → Alt+char (or incomplete lone ESC).
       if (rest.startsWith("\x1b")) {
         if (rest.length < 2) break outer;
+        // ESC ESC… : the first ESC was a real Escape keypress followed by
+        // another sequence (e.g. Esc then an arrow key). Never fuse them.
+        if (rest[1] === "\x1b") {
+          out.push({ key: "Escape", ctrl: false, alt: false, shift: false });
+          consumed += 1;
+          continue;
+        }
         out.push(this.#altKey(rest[1]!));
         consumed += 2;
         continue;

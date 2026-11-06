@@ -8,7 +8,7 @@
  * ever written — append payloads are scrubbed at the persistence boundary.
  */
 
-import { appendFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { scrubSecrets } from "../core/secrets";
@@ -74,7 +74,9 @@ export class SessionStore {
 
   /** Create a new session by writing its header line. Returns the file path. */
   async create(sessionId: string, meta: SessionMeta): Promise<string> {
-    await mkdir(this.#baseDir, { recursive: true });
+    // Transcripts are private: directory 0700, files 0600.
+    await mkdir(this.#baseDir, { recursive: true, mode: 0o700 });
+    await chmod(this.#baseDir, 0o700).catch(() => {});
     const path = this.pathFor(sessionId);
     const header = {
       v: CURRENT_SCHEMA_VERSION,
@@ -82,7 +84,8 @@ export class SessionStore {
       sessionId,
       meta,
     };
-    await appendFile(path, `${JSON.stringify(header)}\n`, "utf-8");
+    await appendFile(path, `${JSON.stringify(header)}\n`, { encoding: "utf-8", mode: 0o600 });
+    await chmod(path, 0o600).catch(() => {});
     this.#nextSeq.set(sessionId, 0);
     return path;
   }
@@ -109,7 +112,7 @@ export class SessionStore {
     // Record whether the scrubber modified the payload so consumers can tell
     // "user passed clean data" apart from "the store redacted something".
     if (!jsonEqual(data, scrubbedData)) line.redacted = true;
-    await appendFile(this.pathFor(sessionId), `${JSON.stringify(line)}\n`, "utf-8");
+    await appendFile(this.pathFor(sessionId), `${JSON.stringify(line)}\n`, { encoding: "utf-8", mode: 0o600 });
     this.#nextSeq.set(sessionId, seq + 1);
     return seq;
   }

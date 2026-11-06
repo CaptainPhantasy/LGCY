@@ -18,7 +18,7 @@
  * known credential key names triggers an onWarn callback (default: stderr).
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { ALWAYS_SECRET_KEY_RE, looksLikeSecret } from "../core/secrets";
@@ -129,8 +129,9 @@ export class SettingsStore {
 
   async save(settings: AppSettings): Promise<void> {
     this.#warnOnCredentialPreferences(settings);
-    await mkdir(dirname(this.#path), { recursive: true });
-    await writeFile(this.#path, JSON.stringify(settings, null, 2), "utf-8");
+    await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
+    await writeFile(this.#path, JSON.stringify(settings, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await chmod(this.#path, 0o600).catch(() => {});
     this.#cache = settings;
   }
 

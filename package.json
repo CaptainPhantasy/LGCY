@@ -1,13 +1,26 @@
 {
   "name": "lgcy",
-  "description": "LGCY — standalone TUI client for OpenAI-compatible, Anthropic-compatible, and OpenCode-routed model providers",
+  "version": "0.1.0",
+  "description": "LGCY: standalone terminal client for OpenAI-compatible, Anthropic-compatible, and OpenCode-routed model providers",
+  "homepage": "https://floydslabs.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CaptainPhantasy/LGCY.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CaptainPhantasy/LGCY/issues"
+  },
+  "author": "Floyd's Labs",
   "module": "src/app/main.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "lgcy": "./dist/lgcy"
+  },
   "scripts": {
     "start": "bun run src/app/main.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun x tsc --noEmit",
     "build": "bun build --compile --outfile dist/lgcy src/app/main.ts",
     "install:local": "bun run scripts/install-local.ts"
   },

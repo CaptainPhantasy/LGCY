@@ -5,17 +5,13 @@ Status: Accepted (cycle 2, 2026-07-17)
 ## Context
 
 Greenfield standalone TUI ("LGCY") for OpenAI-compatible, Anthropic-compatible,
-and OpenCode-routed model providers with optional OMP auth-broker integration.
-Evidence gathered in
-cycle 1 (see docs/loop/PROGRESS.md):
+and OpenCode-routed model providers with optional local auth-broker integration.
 
-- The surrounding platform (`agent-runtime-a` / `omp`) is Bun + TypeScript
-  (bun.lock, packages/ layout, compiled Mach-O single binary).
-- The omp auth-broker (127.0.0.1:17384) is the platform credential vault;
-  its wire schema and a reference TS client exist at
-  `/workspace/agent-runtime/packages/ai/src/auth-broker/`.
-- Available runtimes on the host: bun 1.3.14, node 26.5.0, go 1.26.1,
-  python 3.14.6.
+- The surrounding toolchain is Bun + TypeScript with compiled single-binary
+  packaging.
+- An optional local auth broker (default 127.0.0.1:17384) can supply
+  credentials; LGCY talks to it over a small documented wire schema and never
+  stores secrets itself.
 - The directive requires a zero-dependency provider-network core (standard
   runtime facilities only — fetch, streams, AbortController), but allows a
   TUI framework.
@@ -31,7 +27,7 @@ cycle 1 (see docs/loop/PROGRESS.md):
      from other layers. Zero runtime dependencies.
    - `src/gateway/` — loopback HTTP relay, provider adapters, SSE parser,
      stream normalization. Imports `core` only. Zero runtime dependencies.
-   - `src/broker/` — omp auth-broker client (credential references). Imports
+   - `src/broker/` — optional auth-broker client (credential references). Imports
      `core` only.
    - `src/services/` — sessions, projects, git, files, PTY, tasks. Imports
      `core`, `broker`, `gateway`. Sibling imports WITHIN services/ are

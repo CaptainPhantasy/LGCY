@@ -6,7 +6,13 @@
  * status report otherwise.
  */
 
-import { BUILT_IN_PROVIDERS, ProviderRegistry } from "../gateway/providers";
+import {
+  BUILT_IN_PROVIDERS,
+  CUSTOM_PROVIDER_ID,
+  ProviderRegistry,
+  credentialStatus,
+  customProviderFromEnv,
+} from "../gateway/providers";
 import { GatewayRelay } from "../gateway/relay";
 import { BrokerClient } from "../broker/client";
 import { createSecretResolver } from "../broker/resolve";
@@ -20,18 +26,30 @@ import { CommandRegistry, type CommandContext } from "../tui/command";
 import { KeyDecoder } from "../tui/keybind";
 import { Renderer } from "../tui/renderer";
 import { ScreenBuffer } from "../tui/buffer";
-import { HIDE_CURSOR, SHOW_CURSOR, CLEAR_SCREEN, Color } from "../tui/ansi";
+import { HIDE_CURSOR, SHOW_CURSOR, Color } from "../tui/ansi";
 import type { SecretResolver, UnifiedChatRequest, UnifiedMessage } from "../core/contracts";
 
 export const VERSION = "0.1.0";
 const ALT_ENTER = "\x1b[?1049h";
 const ALT_LEAVE = "\x1b[?1049l";
 
+/** Sentinel printed by /clear; the interactive loop resets the transcript. */
+export const CLEAR_SENTINEL = "__clear__";
+/** Lone-ESC disambiguation window (ms) before it is treated as Escape. */
+export const ESCAPE_TIMEOUT_MS = 30;
+
 const USAGE = `Usage: lgcy [options]
 
 Options:
   -h, --help       Show this help
-  -V, --version    Show the version`;
+  -V, --version    Show the version
+
+Environment:
+  LGCY_BASE_URL    OpenAI-compatible endpoint, e.g. http://127.0.0.1:11434/v1
+                   (OPENAI_BASE_URL is also accepted)
+  LGCY_API_KEY     API key for that endpoint (optional for local servers)
+  LGCY_MODEL       Default model when none is saved, e.g. qwen2.5:7b-instruct
+  OPENAI_API_KEY, ANTHROPIC_API_KEY  keys for the hosted providers`;
 
 export interface AppContext {
   version: string;
@@ -61,13 +79,17 @@ export interface CreateAppOptions {
   settingsPath?: string;
   sessionsDir?: string;
   broker?: BrokerClient;
+  /** Environment used for the custom endpoint; defaults to process.env. */
+  env?: Record<string, string | undefined>;
 }
 
 export function createApp(opts: CreateAppOptions = {}): AppContext {
   const cwd = opts.cwd ?? process.cwd();
   const broker = opts.broker ?? new BrokerClient();
   const secretResolver = createSecretResolver({ broker });
-  const registry = new ProviderRegistry(BUILT_IN_PROVIDERS);
+  const custom = customProviderFromEnv(opts.env ?? process.env);
+  // A configured custom endpoint is listed first so it is the default route.
+  const registry = new ProviderRegistry(custom ? [custom, ...BUILT_IN_PROVIDERS] : BUILT_IN_PROVIDERS);
   const relay = new GatewayRelay(registry);
   const settings = new SettingsStore({ path: opts.settingsPath });
   const sessions = new SessionStore({ baseDir: opts.sessionsDir });
@@ -111,9 +133,13 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
     id: "providers",
     description: "List configured providers",
     run: (_argv, ctx) => {
-      for (const p of ctx.state.registry.list()) {
-        const flag = p.enabled ? "enabled " : "disabled";
-        ctx.print(`${flag}  ${p.id} (${p.dialect})  ${p.baseUrl}`);
+      const list = ctx.state.registry.list();
+      const width = Math.max(...list.map((p) => p.id.length));
+      for (const p of list) {
+        ctx.print(`${p.id.padEnd(width)}  ${credentialStatus(p)}  ${p.baseUrl}`);
+      }
+      if (!list.some((p) => p.id === CUSTOM_PROVIDER_ID)) {
+        ctx.print("local endpoint: set LGCY_BASE_URL=http://127.0.0.1:11434/v1 to add one");
       }
     },
   });
@@ -163,8 +189,8 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
   });
   reg.register({
     id: "clear",
-    description: "Clear the screen",
-    run: (_argv, ctx) => ctx.print(CLEAR_SCREEN),
+    description: "Clear the conversation",
+    run: (_argv, ctx) => ctx.print(CLEAR_SENTINEL),
   });
   reg.register({
     id: "exit",
@@ -178,11 +204,12 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
 export function banner(ctx: AppContext, brokerHealthy: boolean | null, project?: ProjectInfo): string {
   const lines: string[] = [];
   lines.push(`lgcy v${ctx.version}`);
-  const status = brokerHealthy === null ? "broker: unknown" : brokerHealthy ? "broker: online" : "broker: offline";
-  lines.push(status);
+  // The optional auth broker is only mentioned when it is actually running.
+  if (brokerHealthy === true) lines.push("auth broker: online");
   if (project) lines.push(`project: ${project.name} (${project.kind}) @ ${project.root}`);
   const providerSummary = ctx.registry.list().map((p) => p.id).join(", ");
   lines.push(`providers: ${providerSummary}`);
+  lines.push("Type a message and press Enter. /help lists commands.");
   return lines.join("\n");
 }
 
@@ -254,32 +281,41 @@ async function runInteractive(
 
   const decoder = new KeyDecoder();
   const renderer = new Renderer();
-  const log: string[] = [banner(ctx, brokerHealthy, projectInfo)];
+  const bannerText = () => banner(ctx, brokerHealthy, projectInfo);
+  const log: string[] = [bannerText()];
+  // Conversation sent to the model on every turn (multi-turn context).
+  let history: UnifiedMessage[] = [];
   let input = "";
+  let busy = false;
   let settings: AppSettings = await ctx.settings.load();
+  const envModel = process.env.LGCY_MODEL?.trim() || undefined;
   // Provider is resolved lazily from the LATEST settings on every prompt, so
   // /provider takes effect immediately instead of being fixed at startup.
-  const providerId = () => settings.defaultProviderId ?? ctx.registry.list()[0]?.id ?? "openai";
+  const providerId = () => {
+    const saved = settings.defaultProviderId;
+    if (saved && ctx.registry.has(saved)) return saved;
+    return ctx.registry.list()[0]?.id ?? "openai";
+  };
+  const model = () => settings.defaultModel ?? envModel;
 
   const render = () => {
     const buf = new ScreenBuffer(cols, rows);
     buf.clear();
-    // Multi-line entries (banner, streamed replies) occupy one row per line.
-    const lines = log.flatMap((entry) => entry.split("\n"));
+    // Every log entry is word-wrapped to the current width; the newest rows win.
+    const lines = log.flatMap((entry) => wrapText(entry, cols));
     let y = 0;
     for (const line of lines.slice(-Math.max(0, rows - 2))) {
-      buf.writeText(0, y, truncate(line, cols));
+      buf.writeText(0, y, line);
       y++;
     }
     // Status rule: a quiet divider carrying the product name and active route.
     buf.fillRow(rows - 2, 0, cols - 1, "─", { dim: true });
-    const status = statusLine(providerId(), settings.defaultModel);
+    const status = statusLine(providerId(), model()) + (busy ? " waiting " : "");
     if (cols > status.length + 4) {
       buf.writeText(2, rows - 2, status, { fg: Color.blue, bold: true });
     }
-    // Input line.
-    const prompt = `› ${input}`;
-    buf.writeText(0, rows - 1, truncate(prompt, cols), { bold: true });
+    // Input line: keep the tail (where the cursor is) visible.
+    buf.writeText(0, rows - 1, inputWindow(input, cols), { bold: true });
     stdout.write(renderer.render(buf));
     stdout.write(cursorToEnd(rows));
   };
@@ -295,7 +331,8 @@ async function runInteractive(
   const state: CommandState = { settings: ctx.settings, registry: ctx.registry, tasks: ctx.tasks, output: [] };
 
   // Chat messages are persisted to a session (scrubbed at the boundary).
-  // The session is created lazily on the first user message.
+  // The session is created lazily on the first SUCCESSFUL exchange, so failed
+  // or unsent prompts never reach disk.
   let sessionId: string | undefined;
   const ensureSession = async (titleSeed: string): Promise<string> => {
     if (!sessionId) {
@@ -309,12 +346,30 @@ async function runInteractive(
     return sessionId;
   };
 
+  let escTimer: ReturnType<typeof setTimeout> | undefined;
+  const armEscape = () => {
+    if (escTimer) clearTimeout(escTimer);
+    escTimer = undefined;
+    if (!decoder.hasPendingEscape()) return;
+    escTimer = setTimeout(() => {
+      escTimer = undefined;
+      if (decoder.takePendingEscape().length > 0) {
+        input = "";
+        render();
+      }
+    }, ESCAPE_TIMEOUT_MS);
+  };
+
   stdout.write(ALT_ENTER + HIDE_CURSOR);
   try {
     render();
 
     let exiting = false;
     for await (const chunk of stdin) {
+      if (escTimer) {
+        clearTimeout(escTimer);
+        escTimer = undefined;
+      }
       const keys = decoder.feed(chunk as Uint8Array);
       for (const key of keys) {
         if (key.ctrl && key.key === "c") {
@@ -335,26 +390,38 @@ async function runInteractive(
           }
           if (line.startsWith("/")) {
             state.output = [];
-            const matched = await ctx.commands.execute(line, { state, print: (t) => state.output.push(t) });
+            await ctx.commands.execute(line, { state, print: (t) => state.output.push(t) });
             if (state.output.includes("__exit__")) {
               exiting = true;
               break;
             }
-            log.push(`${line}`);
-            for (const o of state.output) log.push(o);
-            void matched;
+            if (state.output.includes(CLEAR_SENTINEL)) {
+              // Reset the transcript and conversation; chrome is redrawn in full.
+              log.length = 0;
+              log.push(bannerText());
+              history = [];
+              sessionId = undefined;
+              renderer.reset();
+            } else {
+              log.push(`${line}`);
+              for (const o of state.output) log.push(o);
+            }
           } else {
             log.push(`› ${line}`);
+            busy = true;
             render();
-            try {
-              const sid = await ensureSession(line);
-              await ctx.sessions.append(sid, "message", { role: "user", content: line });
-              const reply = await sendAndStream(ctx, providerId(), settings.defaultModel, line, log, render);
-              if (reply !== undefined) {
+            const turn: UnifiedMessage[] = [...history, { role: "user", content: line }];
+            const reply = await sendAndStream(ctx, providerId(), model(), line, log, render, history);
+            busy = false;
+            if (reply !== undefined) {
+              history = [...turn, { role: "assistant", content: reply }];
+              try {
+                const sid = await ensureSession(line);
+                await ctx.sessions.append(sid, "message", { role: "user", content: line });
                 await ctx.sessions.append(sid, "message", { role: "assistant", content: reply });
+              } catch (e) {
+                log.push(`warning: session persistence failed: ${e instanceof Error ? e.message : String(e)}`);
               }
-            } catch (e) {
-              log.push(`warning: session persistence failed: ${e instanceof Error ? e.message : String(e)}`);
             }
           }
           settings = await ctx.settings.load();
@@ -376,14 +443,17 @@ async function runInteractive(
           render();
           continue;
         }
+        if (key.alt || key.ctrl) continue;
         if (key.key.length === 1 || (key.key.length > 1 && !isControlName(key.key))) {
           input += key.key;
           render();
         }
       }
       if (exiting) break;
+      armEscape();
     }
   } finally {
+    if (escTimer) clearTimeout(escTimer);
     // Alt-screen + cursor + raw mode are restored on EVERY exit path
     // (Ctrl+C, Ctrl+D, /exit, stream close, or an exception in the loop).
     stdout.off("resize", onResize);
@@ -399,7 +469,8 @@ async function runInteractive(
 /**
  * Stream a chat response into the log. Returns the accumulated assistant
  * text on success (so callers can persist it), or undefined when no text
- * was produced (error or empty stream).
+ * was produced (error or empty stream). `history` carries earlier turns so
+ * the model sees the whole conversation.
  */
 export async function sendAndStream(
   ctx: AppContext,
@@ -408,13 +479,14 @@ export async function sendAndStream(
   text: string,
   log: string[],
   render: () => void,
+  history: UnifiedMessage[] = [],
 ): Promise<string | undefined> {
   if (!model) {
-    log.push("(no default model set — use /model <name>)");
+    log.push("(no model set: use /model <name> or set LGCY_MODEL)");
     render();
     return undefined;
   }
-  const messages: UnifiedMessage[] = [{ role: "user", content: text }];
+  const messages: UnifiedMessage[] = [...history, { role: "user", content: text }];
   const request: UnifiedChatRequest = { providerId, model, messages, stream: true };
   const responseIndex = log.length;
   let acc = "";
@@ -439,6 +511,49 @@ export async function sendAndStream(
   if (acc.length > 0) log[responseIndex] = acc;
   render();
   return acc.length > 0 ? acc : undefined;
+}
+
+/**
+ * Word-wrap one log entry to `width` columns. Embedded newlines are kept;
+ * words longer than the width are hard-split. Never truncates.
+ */
+export function wrapText(text: string, width: number): string[] {
+  const w = Math.max(1, width);
+  const out: string[] = [];
+  for (const raw of text.split("\n")) {
+    const para = raw.replace(/\t/g, "  ");
+    if (para.length <= w) {
+      out.push(para);
+      continue;
+    }
+    let line = "";
+    for (const word of para.split(/( +)/)) {
+      if (word.length === 0) continue;
+      if (line.length + word.length <= w) {
+        line += word;
+        continue;
+      }
+      if (line.trim().length > 0) out.push(line.replace(/ +$/, ""));
+      line = "";
+      if (/^ +$/.test(word)) continue;
+      let rest = word;
+      while (rest.length > w) {
+        out.push(rest.slice(0, w));
+        rest = rest.slice(w);
+      }
+      line = rest;
+    }
+    if (line.length > 0) out.push(line.replace(/ +$/, ""));
+  }
+  return out;
+}
+
+/** Prompt text for the input row, scrolled so the newest characters stay visible. */
+export function inputWindow(input: string, width: number): string {
+  const full = `› ${input}`;
+  if (full.length <= width) return full;
+  const room = Math.max(1, width - 3);
+  return `› …${input.slice(-room)}`;
 }
 
 function truncate(s: string, max: number): string {

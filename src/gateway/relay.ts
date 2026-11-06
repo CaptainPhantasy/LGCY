@@ -156,7 +156,8 @@ export class GatewayRelay {
     let secret: string;
     let proxySecret: string | undefined;
     try {
-      secret = await opts.secretResolver(config.apiKeyReference);
+      // Keyless endpoints (e.g. local Ollama) send no Authorization header.
+      secret = config.apiKeyReference.kind === "none" ? "" : await opts.secretResolver(config.apiKeyReference);
       if (config.proxyAuth) {
         // Best-effort: a missing proxy credential only omits the header.
         try {
