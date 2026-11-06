@@ -7,9 +7,12 @@
  * stripped and invalid values dropped, so a malformed or older-version file
  * can never inject unexpected state downstream.
  *
- * Deletion semantics (update): passing an explicit `undefined` value DELETES
- * the key — at the top level ({ defaultModel: undefined }) and inside the
- * models / preferences maps ({ models: { openai: undefined } }).
+ * Deletion semantics (update): passing an explicit `undefined` value deletes
+ * the key from the per-user layer — at the top level ({ defaultModel: undefined })
+ * and inside the models / preferences maps ({ models: { openai: undefined } }).
+ * This applies to the user's own config only: keys inherited from the
+ * machine-wide shared defaults are NOT removed, and the shared value keeps
+ * appearing in the effective settings returned by load()/update().
  *
  * Preferences are NOT a secret store: saving credential-shaped values under
  * known credential key names triggers an onWarn callback (default: stderr).
@@ -77,7 +80,10 @@ export class SettingsStore {
   readonly #path: string;
   readonly #sharedDir: string;
   readonly #onWarn: (message: string) => void;
+  /** User-layer settings as read from this.#path — the only layer persisted. */
   #cache: AppSettings | undefined;
+  /** Machine-wide defaults, loaded once; layered only in effective views. */
+  #shared: Partial<AppSettings> | undefined;
 
   constructor(opts: SettingsStoreOptions = {}) {
     this.#path = opts.path ?? join(homedir(), ".lgcy", "config.json");
@@ -90,15 +96,35 @@ export class SettingsStore {
   }
 
   async load(): Promise<AppSettings> {
-    if (this.#cache) return this.#cache;
-    const shared = await loadSharedDefaults(this.#sharedDir);
+    if (this.#cache) return this.#effective();
+    this.#shared = await loadSharedDefaults(this.#sharedDir);
     try {
       const raw = await readFile(this.#path, "utf-8");
-      this.#cache = { ...DEFAULT_SETTINGS, ...shared, ...sanitizeSettings(JSON.parse(raw)) };
+      this.#cache = sanitizeSettings(JSON.parse(raw));
     } catch {
-      this.#cache = { ...DEFAULT_SETTINGS, ...shared };
+      this.#cache = {};
     }
-    return this.#cache;
+    return this.#effective();
+  }
+
+  /**
+   * Effective settings: defaults + machine-wide shared defaults layered under
+   * the user's own settings. The shared layer is never persisted — update() and
+   * save() operate on the user layer only, so writes stay per-user and a later
+   * change to the shared file keeps reaching this user.
+   */
+  #effective(): AppSettings {
+    // Merge the models/preferences maps key-by-key so user entries in one map
+    // do not hide inherited shared entries in the same map.
+    const models = { ...this.#shared?.models, ...this.#cache?.models };
+    const preferences = { ...this.#shared?.preferences, ...this.#cache?.preferences };
+    return {
+      ...DEFAULT_SETTINGS,
+      ...this.#shared,
+      ...this.#cache,
+      ...(Object.keys(models).length > 0 ? { models } : {}),
+      ...(Object.keys(preferences).length > 0 ? { preferences } : {}),
+    };
   }
 
   async save(settings: AppSettings): Promise<void> {
@@ -110,10 +136,14 @@ export class SettingsStore {
 
   /**
    * Layer a partial update onto the current settings and persist. Explicit
-   * `undefined` values delete the corresponding key (see module docs).
+   * `undefined` values delete the corresponding key from the per-user layer
+   * only (see module docs): keys inherited from the shared defaults reappear
+   * in the effective settings returned by this method.
    */
   async update(partial: SettingsPatch): Promise<AppSettings> {
-    const current = await this.load();
+    if (!this.#cache) await this.load(); // ensures #shared is populated too
+    // Layer onto the user-only settings so inherited defaults are not materialised.
+    const current = this.#cache!;
     const merged: AppSettings = { ...current };
     for (const [k, v] of Object.entries(partial)) {
       if (k === "models" || k === "preferences") continue; // deep-merged below
@@ -137,7 +167,7 @@ export class SettingsStore {
       merged.preferences = preferences;
     }
     await this.save(merged);
-    return merged;
+    return await this.load();
   }
 
   #warnOnCredentialPreferences(settings: AppSettings): void {
