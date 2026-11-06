@@ -11,6 +11,13 @@
     "url": "https://github.com/CaptainPhantasy/LGCY/issues"
   },
   "author": "Floyd's Labs",
+  "license": "AGPL-3.0-or-later",
+  "files": [
+    "src",
+    "dist/lgcy",
+    "LICENSE",
+    "README.md"
+  ],
   "module": "src/app/main.ts",
   "type": "module",
   "private": true,

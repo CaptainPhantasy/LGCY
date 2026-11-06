@@ -132,3 +132,9 @@ Before a release, also check in a real terminal:
 3. `Esc` clears the input; arrow keys do not leave stray characters.
 4. `/clear` keeps the banner, status bar and prompt.
 5. `/exit` restores the cursor, raw mode and the main screen.
+
+## License
+
+LGCY is free software under the GNU Affero General Public License, version 3 or
+any later version (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). If you run a modified
+version for other people over a network, you must offer them its source code.
