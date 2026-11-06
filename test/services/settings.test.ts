@@ -1,14 +1,18 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { rm, mkdtemp, writeFile } from "node:fs/promises";
+import { rm, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AppSettings, DEFAULT_SETTINGS, SettingsStore } from "../../src/services/settings";
 
 let dir: string;
 let path: string;
+// Non-existent directory: isolates stores from any host-wide
+// /usr/local/share/lgcy/config.json (or LGCY_SHARED_DIR) state.
+let sharedDir: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "lgcy-settings-"));
   path = join(dir, "config.json");
+  sharedDir = join(dir, "shared");
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -16,23 +20,23 @@ afterEach(async () => {
 
 describe("SettingsStore", () => {
   test("load returns defaults when file missing", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     const s = await store.load();
     expect(s.theme).toBe(DEFAULT_SETTINGS.theme);
   });
 
   test("save + load round-trip", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     await store.save({ defaultProviderId: "openai", theme: "dark" });
     // Fresh instance reads from disk (no cache).
-    const store2 = new SettingsStore({ path });
+    const store2 = new SettingsStore({ path, sharedDir });
     const s = await store2.load();
     expect(s.defaultProviderId).toBe("openai");
     expect(s.theme).toBe("dark");
   });
 
   test("update merges without clobbering other keys", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     await store.update({ defaultProviderId: "openai", theme: "dark" });
     await store.update({ defaultModel: "gpt-4" });
     const s = await store.load();
@@ -42,7 +46,7 @@ describe("SettingsStore", () => {
   });
 
   test("update deep-merges models map", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     const a: AppSettings = await store.update({ models: { openai: ["gpt-4"] } });
     await store.update({ models: { anthropic: ["claude"] } });
     const s = await store.load();
@@ -51,7 +55,7 @@ describe("SettingsStore", () => {
   });
 
   test("update deep-merges preferences", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     await store.update({ preferences: { font: "mono" } });
     await store.update({ preferences: { fontSize: 14 } });
     const s = await store.load();
@@ -61,7 +65,7 @@ describe("SettingsStore", () => {
 
 describe("SettingsStore — items #16/#17/#45", () => {
   test("load strips unknown keys and invalid theme (#17)", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     await writeFile(path, JSON.stringify({ theme: "neon", bogus: 1, defaultProviderId: 42 }), "utf-8");
     const s = await store.load();
     expect(s.theme).toBe("auto"); // invalid → default
@@ -69,14 +73,14 @@ describe("SettingsStore — items #16/#17/#45", () => {
     expect(s.defaultProviderId).toBeUndefined(); // non-string dropped
   });
   test("update deletes models keys via undefined (#16)", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     await store.update({ models: { openai: ["gpt-4"], anthropic: ["claude"] } });
     await store.update({ models: { openai: undefined } });
     const s = await store.load();
     expect(s.models).toEqual({ anthropic: ["claude"] });
   });
   test("update deletes top-level keys via undefined (#16)", async () => {
-    const store = new SettingsStore({ path });
+    const store = new SettingsStore({ path, sharedDir });
     await store.update({ defaultModel: "gpt-4" });
     await store.update({ defaultModel: undefined });
     const s = await store.load();
@@ -84,9 +88,43 @@ describe("SettingsStore — items #16/#17/#45", () => {
   });
   test("onWarn triggered on credential-shaped preferences (#45)", async () => {
     const warnings: string[] = [];
-    const store = new SettingsStore({ path, onWarn: (m) => warnings.push(m) });
+    const store = new SettingsStore({ path, sharedDir, onWarn: (m) => warnings.push(m) });
     await store.update({ preferences: { apiToken: "sk-" + "abcdefghijklmnop" } });
     expect(warnings.length).toBeGreaterThanOrEqual(1);
     expect(warnings[0]).toContain("preferences.");
+  });
+});
+
+describe("SettingsStore injectable sharedDir (regression: PR #7)", () => {
+  async function writeShared(dirPath: string, data: unknown) {
+    await mkdir(dirPath, { recursive: true });
+    await writeFile(join(dirPath, "config.json"), JSON.stringify(data));
+  }
+
+  test("each store reads its own shared directory", async () => {
+    const a = join(dir, "shared-a");
+    const b = join(dir, "shared-b");
+    await writeShared(a, { theme: "light", defaultModel: "model-a" });
+    await writeShared(b, { theme: "dark", defaultModel: "model-b" });
+    const sa = await new SettingsStore({ path: join(dir, "a.json"), sharedDir: a }).load();
+    const sb = await new SettingsStore({ path: join(dir, "b.json"), sharedDir: b }).load();
+    expect(sa.theme).toBe("light");
+    expect(sa.defaultModel).toBe("model-a");
+    expect(sb.theme).toBe("dark");
+    expect(sb.defaultModel).toBe("model-b");
+  });
+
+  test("a missing shared directory yields built-in defaults", async () => {
+    const s = await new SettingsStore({ path, sharedDir: join(dir, "does-not-exist") }).load();
+    expect(s).toEqual({ ...DEFAULT_SETTINGS });
+  });
+
+  test("user settings take precedence over shared defaults", async () => {
+    const shared = join(dir, "shared-u");
+    await writeShared(shared, { theme: "light", defaultModel: "model-shared" });
+    await writeFile(path, JSON.stringify({ theme: "dark" }));
+    const s = await new SettingsStore({ path, sharedDir: shared }).load();
+    expect(s.theme).toBe("dark");
+    expect(s.defaultModel).toBe("model-shared");
   });
 });
