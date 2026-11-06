@@ -1,11 +1,24 @@
 # lgcy
 
-LGCY is a terminal chat client for OpenAI-compatible, Anthropic-compatible and
-OpenCode-routed model providers. Point it at a local server such as Ollama, or at a
-hosted provider with your own key, and talk to the model in a full-screen terminal UI.
+*Or: the terminal chat groundwork, already poured.*
 
-It has no runtime dependencies: a custom differential ANSI renderer, append-only JSONL
-session history, and a provider-neutral streaming pipeline.
+LGCY is a zero-dependency Bun and TypeScript foundation for terminal chat tools, built
+at Floyd's Labs / Legacy AI. If you are short on time, team bandwidth or API credits
+and want your own terminal chat client, agent shell or local model front end, start
+here instead of from an empty folder. No React, no Ink, no runtime dependencies.
+
+What you get to build on:
+
+- A differential ANSI renderer: escape codes, a screen buffer and a diffing renderer
+  in about 350 lines, plus a key decoder.
+- A streaming relay for OpenAI-compatible, Anthropic-compatible and OpenCode-routed
+  providers, including local servers such as Ollama, with an incremental SSE parser.
+- A JSONL session store that scrubs secrets before anything is written.
+- Starter layers you can keep, replace or extend: `core`, `gateway`, `broker`,
+  `services` and `tui`.
+
+It also works as-is: point it at a local model or at a hosted provider with your own
+key, and chat in a full-screen terminal UI.
 
 ![Two-turn chat with a local Ollama model at 80x24](docs/screenshots/multi-turn-80x24.png)
 
@@ -133,8 +146,26 @@ Before a release, also check in a real terminal:
 4. `/clear` keeps the banner, status bar and prompt.
 5. `/exit` restores the cursor, raw mode and the main screen.
 
-## License
+## Why We Use the AGPL-3.0 License
 
-LGCY is free software under the GNU Affero General Public License, version 3 or
-any later version (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). If you run a modified
-version for other people over a network, you must offer them its source code.
+At Floyd's Labs / Legacy AI, we built LGCY as a foundational terminal chat TUI substrate
+to solve a recurring engineering headache and save you the groundwork. If you are short
+on time, development resources or API credits, it gives you a working, zero-dependency
+starting point so you can spend your energy building your own layers on top.
+
+We release LGCY under the GNU Affero General Public License v3 (`AGPL-3.0-or-later`) for
+three plain reasons:
+
+- **Open Exchange:** We believe in putting real foundational building blocks into the
+  hands of independent developers, self-hosters and hobbyists for unhindered personal
+  and local use.
+- **The Give-Back Rule:** If you take this module, modify it and expose it to the public
+  over a network, such as a cloud app or hosted API service, the AGPL-3.0 requires you
+  to make your modified source code available under these same open rules.
+- **Passive Protection:** This license keeps our self-funded, independent lab work a
+  shared community asset. It stops proprietary platforms from repackaging our
+  foundation into closed-source commercial services without contributing back.
+
+If you are building tools for yourself, tinkering locally, or playing by the rules of
+open-source reciprocity, this foundation is yours to use. See [`LICENSE`](LICENSE) for
+the full terms.
