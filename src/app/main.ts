@@ -112,8 +112,8 @@ function registerBuiltinCommands(reg: CommandRegistry<CommandState>): void {
     description: "List configured providers",
     run: (_argv, ctx) => {
       for (const p of ctx.state.registry.list()) {
-        const flag = p.enabled ? "\u2713" : "\u2717";
-        ctx.print(`${flag} ${p.id} (${p.dialect}) → ${p.baseUrl}`);
+        const flag = p.enabled ? "enabled " : "disabled";
+        ctx.print(`${flag}  ${p.id} (${p.dialect})  ${p.baseUrl}`);
       }
     },
   });
@@ -184,6 +184,11 @@ export function banner(ctx: AppContext, brokerHealthy: boolean | null, project?:
   const providerSummary = ctx.registry.list().map((p) => p.id).join(", ");
   lines.push(`providers: ${providerSummary}`);
   return lines.join("\n");
+}
+
+/** Compact status label shown on the divider above the input line. */
+export function statusLine(providerId: string, model?: string): string {
+  return ` LGCY  ${providerId}${model ? `  ${model}` : ""} `;
 }
 
 /* --------------------------- Interactive loop ----------------------------- */
@@ -259,15 +264,22 @@ async function runInteractive(
   const render = () => {
     const buf = new ScreenBuffer(cols, rows);
     buf.clear();
+    // Multi-line entries (banner, streamed replies) occupy one row per line.
+    const lines = log.flatMap((entry) => entry.split("\n"));
     let y = 0;
-    for (const line of log.slice(-rows + 3)) {
-      buf.writeText(0, y, truncate(line, cols), { fg: Color.brightWhite });
+    for (const line of lines.slice(-Math.max(0, rows - 2))) {
+      buf.writeText(0, y, truncate(line, cols));
       y++;
     }
-    // Input line.
+    // Status rule: a quiet divider carrying the product name and active route.
     buf.fillRow(rows - 2, 0, cols - 1, "─", { dim: true });
-    const prompt = `\u276F ${input}`;
-    buf.writeText(0, rows - 1, truncate(prompt, cols), { fg: Color.green, bold: true });
+    const status = statusLine(providerId(), settings.defaultModel);
+    if (cols > status.length + 4) {
+      buf.writeText(2, rows - 2, status, { fg: Color.blue, bold: true });
+    }
+    // Input line.
+    const prompt = `› ${input}`;
+    buf.writeText(0, rows - 1, truncate(prompt, cols), { bold: true });
     stdout.write(renderer.render(buf));
     stdout.write(cursorToEnd(rows));
   };
@@ -332,7 +344,7 @@ async function runInteractive(
             for (const o of state.output) log.push(o);
             void matched;
           } else {
-            log.push(`\u276F ${line}`);
+            log.push(`› ${line}`);
             render();
             try {
               const sid = await ensureSession(line);
@@ -356,6 +368,11 @@ async function runInteractive(
         }
         if (key.key === "Escape") {
           input = "";
+          render();
+          continue;
+        }
+        if (key.key === "Space") {
+          input += " ";
           render();
           continue;
         }

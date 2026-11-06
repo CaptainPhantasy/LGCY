@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { banner, createApp, main, sendAndStream, VERSION, type AppContext } from "../../src/app/main";
+import { banner, createApp, main, sendAndStream, statusLine, VERSION, type AppContext } from "../../src/app/main";
 import type { UnifiedStreamEvent } from "../../src/core/contracts";
 
 let dir: string;
@@ -191,5 +191,14 @@ describe("sendAndStream", () => {
     expect(renders[1]).toEqual(["hello"]);
     expect(renders[2]).toEqual(["hello"]);
     expect(log).toEqual(["hello"]);
+  });
+});
+
+describe("statusLine", () => {
+  test("names the product and active provider", () => {
+    expect(statusLine("openai")).toBe(" LGCY  openai ");
+  });
+  test("includes the model when one is set", () => {
+    expect(statusLine("anthropic", "claude-sonnet")).toBe(" LGCY  anthropic  claude-sonnet ");
   });
 });
